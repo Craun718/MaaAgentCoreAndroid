@@ -13,6 +13,8 @@
 | `agent-core-3.13.15-arm64-v8a.tar.gz` | arm64-v8a |
 | `agent-core-3.13.15-x86_64.tar.gz` | x86_64 |
 
+Release 包的组成和生产流程见 [RELEASE_PROCESS.md](RELEASE_PROCESS.md)。
+
 
 ## 许可
 
