@@ -1,9 +1,9 @@
 # Release 包生产流程
 
-本文说明 `MaaAgentCoreAndroid` release 资产的组成、生产步骤和验收标准。当前仓库没有 checked-in 的构建脚本或 GitHub Actions，因此本文分为两类内容：
+本文说明 `MaaAgentCoreAndroid` release 资产的组成、生产步骤和验收标准。当前仓库包含 `scripts/build_agent_core.py` 生产脚本和手动触发的 `Release agent core` GitHub Actions 工作流，因此本文分为两类内容：
 
 - **已确认**：来自已发布包、wheel 元数据和下游消费脚本的实物事实。
-- **生产规范**：后续制作同类 release 时应执行的流程。该流程是从当前包反推并整理出来的，不能表述为当前 release 已经由仓库内自动化生成。
+- **生产规范**：手动 CI 和 `scripts/build_agent_core.py` 执行的流程。旧 release 在这些脚本入库前发布，不能表述为由当前自动化生成。
 
 ## 1. Release 命名与版本矩阵
 
@@ -26,6 +26,16 @@
 ```text
 agent-core-<python-version>-<android-abi>.tar.gz
 ```
+
+手动 CI 的 MaaFramework 输入使用 PyPI 规范版本号。为兼容常见的
+`-beta.x` 写法，脚本先把它规范化为 `bx`，后续 wheel 查询、manifest、
+release tag 和 prerelease 标记都使用规范化结果：
+
+| 手动输入 | 规范化版本 | Release tag 后缀 |
+|---|---|---|
+| `5.12.3` | `5.12.3` | `maafw5.12.3` |
+| `5.13.0-beta.1` | `5.13.0b1` | `maafw5.13.0b1` |
+| `5.13.0b6` | `5.13.0b6` | `maafw5.13.0b6` |
 
 当前两个资产为：
 
@@ -142,6 +152,10 @@ https://chaquo.com/pypi-upstream/
 | `numpy-2.3.2-1-cp313-cp313-android_24_x86_64.whl` | `17e5ffa985ad510831654610c9ab1558f031875379d1a18a0439d4cee1126705` |
 | `StrEnum-0.4.15-py3-none-any.whl` | `a30cda4af7cc6b5bf52c8055bc4bf4b2b6b14a93b574626da33df53cf7740659` |
 
+手动 CI 中 Python 和 MaaFramework 版本来自 workflow 输入；numpy/StrEnum
+版本由脚本固定。构建产出的 `build-metadata.json` 会记录实际下载的 Python
+源码包、maafw wheel 和 runtime wheel SHA-256。
+
 ### 3.3 Maa Python binding
 
 当前包的 `maa/*.py` 与 PyPI `maafw==5.12.3` wheel 内的 Python 源码一致，只有 `maa/library.py` 带 Android 平台名补丁。生产时选择一个 PyPI wheel 作为源材料并固定哈希。本轮核对使用：
@@ -183,6 +197,15 @@ work/
 
 建议每次从空目录开始。复用缓存时必须验证输入哈希，并删除旧 `stage/` 与旧 `dist/`，避免上一个 ABI 的 `.so`、dist-info 或 manifest 混入新包。
 
+手动 CI 调用：
+
+```bash
+python scripts/build_agent_core.py \
+  --python-version 3.13.15 \
+  --maafw-version 5.13.0-beta.1 \
+  --work-dir "$AGENT_CORE_WORK_DIR"
+```
+
 ## 5. 生成 CPython 运行时
 
 ### 5.1 完整重建
@@ -195,21 +218,21 @@ work/
 - Python target 构建：<https://github.com/chaquo/chaquopy/blob/master/target/python/build.sh>
 - 批量构建与打包：<https://github.com/chaquo/chaquopy/blob/master/target/python/build-and-package.sh>
 
-以 `arm64-v8a` 为例，CPython 官方流程是：
+以 `arm64-v8a` 为例，CPython 官方流程必须把子命令放在全局选项前：
 
 ```bash
 cd Python-3.13.15/Android
-./android.py build aarch64-linux-android
+python android.py configure-build --clean --cross-build-dir "$WORK/cross-build"
+python android.py make-build --cross-build-dir "$WORK/cross-build"
+python android.py pythoninfo-build --cross-build-dir "$WORK/cross-build"
+python android.py configure-host --clean aarch64-linux-android --cross-build-dir "$WORK/cross-build"
+python android.py make-host aarch64-linux-android --cross-build-dir "$WORK/cross-build"
 ```
 
-`x86_64` 使用：
+`x86_64` 把最后两条命令中的 host triplet 替换为 `x86_64-linux-android`。
+生产脚本按上述顺序执行，并同时构建两个 ABI。
 
-```bash
-cd Python-3.13.15/Android
-./android.py build x86_64-linux-android
-```
-
-构建产物位于源码树的 `cross-build/<host>/prefix/`。将该目录复制为：
+构建产物位于指定的 `cross-build/<host>/prefix/`。将该目录复制为：
 
 ```text
 stage/<abi>/bundle/prefix/
@@ -230,7 +253,7 @@ stage/<abi>/bundle/prefix/
 - pip/ensurepip 的可引导安装内容
 - `__pycache__`
 
-`bundle/bin/python3` 是一个 Android PIE 可执行文件，入口实现只调用 `Py_BytesMain`。它必须使用 `/system/bin/linker64` 作为 ELF interpreter，并动态链接 `libpython3.13.so`。后续生产应把这份 launcher 的源码或固定二进制来源放入仓库；没有这个输入就无法完整重建当前包。
+`bundle/bin/python3` 是一个 Android PIE 可执行文件，入口实现只调用 `Py_BytesMain`。它必须使用 `/system/bin/linker64` 作为 ELF interpreter，并动态链接 `libpython3.13.so`。新生产的 launcher 源码位于 `scripts/launcher.c`，并由构建脚本使用对应 ABI 的 CPython Android 工具链编译。
 
 当前已发布包没有记录 launcher 的原始源码和确切构建命令。产物元数据显示 launcher 由 Android NDK `r29-beta2` / Clang 20 构建，而 `libpython3.13.so` 中可见 NDK `r27d` 标记；这说明当前包不是一次完整、可追溯的单工具链构建。
 
@@ -353,7 +376,7 @@ for dist_info_name, owned_roots in packages.items():
         writer.writerows(rows)
 ```
 
-版本变化时同步更新 dist-info 名称和 owned roots。后续把这段逻辑固化为生产脚本，避免手改 `RECORD`。
+版本变化时同步更新 dist-info 名称和 owned roots。生产脚本会裁剪后重新生成 numpy 和 StrEnum 的 `RECORD`，不要手改这些清单。
 
 ## 7. 收录并补丁 `maa`
 
@@ -450,7 +473,10 @@ stage/<abi>/bundle/agent-core.json
 7. 双向校验 dist-info `RECORD`：包内每个归属文件都有对应行，`RECORD` 每个非空行都指向存在文件，且 hash、大小一致；license 文件仍存在。`maa` 有意不带 dist-info，不参与该校验。
 8. 重新对比 `maa` 与源 wheel，确认只有 `library.py` 的目标补丁差异。
 
-至少在两个真实 Android 设备或模拟器上分别覆盖两个 ABI。测试环境必须提供 MaaFramework `5.12.3` 的对应 Android 原生库。
+### 真机验收
+
+手动 CI 只执行上述静态验收并创建 draft release，不会启动模拟器或真机。
+发布前至少在两个真实 Android 设备或模拟器上分别覆盖两个 ABI。测试环境必须提供与 manifest 一致的 MaaFramework Android 原生库。
 
 真机冒烟内容：
 
@@ -526,15 +552,15 @@ tar -tzf dist/agent-core-3.13.15-x86_64.tar.gz >/dev/null
 
 ## 11. 发布 GitHub Release
 
-所有静态与真机验收通过后再创建 tag。建议流程：
+手动 CI 的发布流程：
 
-1. 确认 `main` 上 README 和本文中的版本、hash、链接已经更新。
-2. 创建 tag：`3.13.15-maafw5.12.3`。
-3. 创建 draft release，标题使用 `CPython 3.13.15 / MaaFramework 5.12.3`。
-4. 上传两个 `.tar.gz` 资产。
-5. 在 release notes 中记录版本矩阵、输入来源、最终 SHA-256 和已测 Android 环境。
-6. 从 GitHub 下载 URL 重新下载资产，校验 SHA-256 与本地产物一致。
-7. 发布 release。
+1. 确认要构建的 commit，并在 Actions 页面手动运行 `Release agent core`。
+2. CI 编译、打包、静态验收，并创建 draft release。Beta 版本会带 prerelease 标记。
+3. CI 上传两个 `.tar.gz` 资产、`SHA256SUMS` 和 `build-metadata.json`；release notes 记录版本矩阵和最终 SHA-256。
+4. 从 GitHub 下载 URL 重新下载资产，校验 SHA-256 与 `SHA256SUMS` 一致。
+5. 准备匹配版本的 MaaFramework 原生库，完成第 9 节真机验收。
+6. 把已测 Android 环境和结果补充到 release notes。
+7. 人工发布 release。若已存在同名 release 或 tag，CI 拒绝覆盖。
 8. 发布后用下游打包脚本走一次完整消费，确认新 release URL、manifest、site-packages 叠加安装都可用。
 
 Release notes 不应声称包含 MaaFramework 原生库。若宿主所需的 MaaFramework Android 包有独立发布地址，应链接到对应的 `5.12.3` release。
@@ -554,10 +580,10 @@ Release notes 不应声称包含 MaaFramework 原生库。若宿主所需的 Maa
 
 ## 13. 当前限制与待固化事项
 
-已确认的限制：
+当前限制：
 
-- 仓库内没有生产脚本、GitHub Actions 或完整输入锁定文件。
-- 当前 release 的 CPython launcher 源码和确切构建环境未入库。
+- CI 只执行静态验收和 draft 上传，不包含 Android 真机冒烟；发布必须保留人工门槛。
+- 仓库没有离线完整输入锁定文件；CPython Android 依赖仍由官方脚本按源码内版本下载。
 - 当前包的二进制元数据显示 launcher 与 `libpython3.13.so` 来自不同 NDK 版本，精确构建来源不可追溯。
 - 当前包的 numpy/StrEnum `RECORD` 是裁剪前的旧清单，包含不存在的 `__pycache__`、tests、f2py 和 entry-point 路径；例如 arm64 包中 numpy 有 951 个悬空行、StrEnum 有 4 个悬空行。它不能作为包元数据完整性验收基线，下个 release 必须重新生成。
 - 当前包的两个 launcher 归档 mode 都是 `0666`，不是可执行文件。下游必须先调整权限；后续包按第 10 节归一为 `0755`。
@@ -567,7 +593,7 @@ Release notes 不应声称包含 MaaFramework 原生库。若宿主所需的 Maa
 
 后续固化建议：
 
-1. 把 launcher 源码、Python 构建参数、NDK 版本和所有输入哈希加入仓库。
-2. 用脚本实现 staging、wheel 安装、`maa` 补丁、manifest 生成、验收和确定性打包。
-3. 为两个 ABI 添加 GitHub Actions 构建，并把构建日志哈希写入 release notes。
-4. 保留上一版到下一版的二进制对比报告，区分运行时变更与 site-packages 变更。
+1. 为两个 ABI 增加可复用的真机或模拟器冒烟矩阵，并把结果记录到 release notes。
+2. 增加离线输入锁存和校验，避免构建过程依赖外部下载地址的可用性。
+3. 保留上一版到下一版的二进制对比报告，区分运行时变更与 site-packages 变更。
+4. 固化 GitHub Actions runner 与 Android SDK/NDK 的可追溯环境信息。
