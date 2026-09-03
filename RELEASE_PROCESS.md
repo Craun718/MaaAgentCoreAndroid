@@ -247,7 +247,9 @@ stage/<abi>/bundle/prefix/
 
 ## 6. 安装预置 Python 包
 
-对每个 ABI 执行 pip 的目标目录安装。pip 只做 wheel 文件名 tag 匹配，不在 Android 上执行 setup/build，因此必须使用 `--only-binary=:all:` 并列出精确 platform。
+对每个 ABI 执行 pip 的目标目录安装。pip 只做 wheel 文件名 tag 匹配，不在 Android 上执行 setup/build，因此必须使用 `--only-binary=:all:` 并列出精确 platform。预置包的依赖集合是固定的，安装时应使用 `--no-deps`；发现缺失依赖时更新版本矩阵和输入清单，而不是让 pip 自动选择新包。
+
+还必须使用 `--no-compile`。否则 pip 会用宿主机 Python 生成错误 ABI 的 `.pyc`，并把它们写入 `RECORD`；这些字节码不能在 Android 运行时使用。
 
 `arm64-v8a`：
 
@@ -255,6 +257,8 @@ stage/<abi>/bundle/prefix/
 python3 -m pip install \
   --target stage/arm64-v8a/bundle/site-packages \
   --only-binary=:all: \
+  --no-deps \
+  --no-compile \
   --python-version 3.13 \
   --implementation cp \
   --abi cp313 \
@@ -271,6 +275,8 @@ python3 -m pip install \
 python3 -m pip install \
   --target stage/x86_64/bundle/site-packages \
   --only-binary=:all: \
+  --no-deps \
+  --no-compile \
   --python-version 3.13 \
   --implementation cp \
   --abi cp313 \
@@ -288,7 +294,66 @@ python3 -m pip install \
 - `numpy-2.3.2.dist-info/WHEEL` 中的 tag 是当前 ABI 的 `cp313-cp313-android_24_<wheelAbi>`。
 - StrEnum 是 `py3-none-any`。
 - `numpy.libs/` 中的 `libc++_shared`、`libgfortran`、`libopenblas` 与 ABI 匹配。
-- 清理所有 `__pycache__`，但保留 dist-info、license、RECORD 和类型标注文件。
+
+安装后按当前包契约裁剪 site-packages：
+
+```bash
+rm -rf \
+  stage/<abi>/bundle/site-packages/bin \
+  stage/<abi>/bundle/site-packages/numpy/f2py \
+  stage/<abi>/bundle/site-packages/numpy/_pyinstaller
+
+find stage/<abi>/bundle/site-packages/numpy \
+  -type d -name tests -prune -exec rm -rf {} +
+
+find stage/<abi>/bundle/site-packages \
+  -type d -name __pycache__ -prune -exec rm -rf {} +
+
+find stage/<abi>/bundle/site-packages \
+  -type f -name '*.pyc' -delete
+```
+
+不要把 `numpy/testing/` 当成 `tests/` 删除；`numpy.testing` 是运行时公开 API。`bin/`、`f2py`、`_pyinstaller` 和各级 `tests/` 不属于本内核的运行时契约。
+
+裁剪后必须重新生成 numpy 和 StrEnum 的 `RECORD`。`RECORD` 要覆盖包拥有的每个实际文件，同时不得引用已删除文件。以 `arm64-v8a` 为例：
+
+```python
+import base64
+import csv
+import hashlib
+from pathlib import Path
+
+site_packages = Path("stage/arm64-v8a/bundle/site-packages")
+packages = {
+    "numpy-2.3.2.dist-info": (
+        "numpy",
+        "numpy.libs",
+        "numpy-2.3.2.dist-info",
+    ),
+    "StrEnum-0.4.15.dist-info": (
+        "strenum",
+        "StrEnum-0.4.15.dist-info",
+    ),
+}
+
+for dist_info_name, owned_roots in packages.items():
+    record = site_packages / dist_info_name / "RECORD"
+    rows = []
+    for root_name in owned_roots:
+        root = site_packages / root_name
+        for path in sorted(p for p in root.rglob("*") if p.is_file()):
+            if path == record:
+                continue
+            digest = hashlib.sha256(path.read_bytes()).digest()
+            encoded = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
+            rows.append((path.relative_to(site_packages).as_posix(), encoded, path.stat().st_size))
+
+    with record.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle, lineterminator="\n")
+        writer.writerows(rows)
+```
+
+版本变化时同步更新 dist-info 名称和 owned roots。后续把这段逻辑固化为生产脚本，避免手改 `RECORD`。
 
 ## 7. 收录并补丁 `maa`
 
@@ -382,7 +447,7 @@ stage/<abi>/bundle/agent-core.json
 4. `bin/python3` 是 Android PIE ELF，interpreter 为 `/system/bin/linker64`。
 5. `prefix/lib/libpython3.13.so`、`lib-dynload/*.so`、numpy 扩展和 `numpy.libs/*.so` 的机器架构与 ABI 匹配。
 6. 逐项确认不存在 MaaFramework 原生库、`maa/bin`、构建缓存、包管理器临时文件和 `__pycache__`。
-7. 校验 dist-info `RECORD` 能覆盖已安装文件，license 文件仍存在。
+7. 双向校验 dist-info `RECORD`：包内每个归属文件都有对应行，`RECORD` 每个非空行都指向存在文件，且 hash、大小一致；license 文件仍存在。`maa` 有意不带 dist-info，不参与该校验。
 8. 重新对比 `maa` 与源 wheel，确认只有 `library.py` 的目标补丁差异。
 
 至少在两个真实 Android 设备或模拟器上分别覆盖两个 ABI。测试环境必须提供 MaaFramework `5.12.3` 的对应 Android 原生库。
@@ -455,9 +520,9 @@ tar -tzf dist/agent-core-3.13.15-x86_64.tar.gz >/dev/null
 
 再解包到新的空目录，重复第 9 节静态验收。
 
-打包前先做权限归一：目录 `0755`、`bin/python3` `0755`、普通文件 `0644`。如果运行时启动要求其它可执行位，必须在文档和验收清单中显式记录。
+打包前先做权限归一：目录 `0755`、`bin/python3` `0755`、普通文件 `0644`。如果运行时启动要求其它可执行位，必须在文档和验收清单中显式记录。静态验收必须直接检查归档条目的 mode，而不是只检查解包后 staging 目录。
 
-当前 `3.13.15-maafw5.12.3` 归档的 owner/group 已是 `0`，大部分 mode 被归一为目录 `0777`、文件 `0666`，但不同生成阶段的 mtime 不一致，且未固定 gzip 元数据。因此它不能被描述为 byte-for-byte reproducible。上述固定元数据流程是后续版本的规范；它不会逐字节复现当前资产。
+当前 `3.13.15-maafw5.12.3` 归档的 owner/group 已是 `0`，大部分 mode 被归一为目录 `0777`、文件 `0666`；两个 `bin/python3` 也不是可执行位，下游直接执行前必须先 `chmod`。此外，不同生成阶段的 mtime 不一致，且未固定 gzip 元数据。因此它不能被描述为 byte-for-byte reproducible。上述固定元数据流程是后续版本的规范；它不会逐字节复现当前资产。
 
 ## 11. 发布 GitHub Release
 
@@ -478,11 +543,11 @@ Release notes 不应声称包含 MaaFramework 原生库。若宿主所需的 Maa
 
 下游消费这个内核时应遵守：
 
-1. 解包后直接使用 `<abi>/bundle` 作为 agent runtime 根目录。
+1. 解包后使用 `<abi>/bundle` 作为 agent runtime 根目录。当前 `3.13.15-maafw5.12.3` 资产的 launcher 没有可执行位，启动前必须显式调整；后续按本文生成的包必须在归档内直接带 `0755`。
 2. 额外依赖安装到 `bundle/site-packages`，不要另建 Python 环境。
 3. 从 `agent-core.json` 读取 Python 版本、ABI、`pyAbiTag`、`wheelApis`、`wheelAbi` 和 `provides`。
 4. 生成 pip platform 时按顺序展开 `wheelApis`，格式为 `android_<api>_<wheelAbi>`。
-5. 用 PEP 503 规则规范化依赖名；命中 `provides` 的包不要重复安装，即使项目 pin 了不同版本。
+5. 用 PEP 503 规则规范化依赖名。命中 `provides` 且项目约束与提供版本兼容时不要重复安装；版本不兼容时必须报出显式冲突，不能把不兼容 pin 静默当作已满足。
 6. `maaagentbinary` 是桌面端可执行包，Android 上应依赖宿主 `nativeLibraryDir` 或等价路径，不安装该包。
 7. MaaFramework 原生库由宿主提供，版本必须与 manifest 的 `maafw` 匹配。
 8. 更新任何二进制输入都必须发新 release 和新资产，不能覆盖已上传资产。
@@ -494,6 +559,8 @@ Release notes 不应声称包含 MaaFramework 原生库。若宿主所需的 Maa
 - 仓库内没有生产脚本、GitHub Actions 或完整输入锁定文件。
 - 当前 release 的 CPython launcher 源码和确切构建环境未入库。
 - 当前包的二进制元数据显示 launcher 与 `libpython3.13.so` 来自不同 NDK 版本，精确构建来源不可追溯。
+- 当前包的 numpy/StrEnum `RECORD` 是裁剪前的旧清单，包含不存在的 `__pycache__`、tests、f2py 和 entry-point 路径；例如 arm64 包中 numpy 有 951 个悬空行、StrEnum 有 4 个悬空行。它不能作为包元数据完整性验收基线，下个 release 必须重新生成。
+- 当前包的两个 launcher 归档 mode 都是 `0666`，不是可执行文件。下游必须先调整权限；后续包按第 10 节归一为 `0755`。
 - 当前归档元数据不完全确定，不能宣称 byte-for-byte 可复现。
 - 包内没有 MaaFramework 原生库，真机测试必须准备宿主侧 native 库。
 - Android CPython 运行时未包含 `_multiprocessing`；需要该 API 的下游项目必须自行提供兼容 shim 或避免跨进程语义。
