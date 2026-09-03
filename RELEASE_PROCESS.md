@@ -245,12 +245,18 @@ stage/<abi>/bundle/prefix/
 - 压缩标准库 `lib/python313.zip`
 - OpenSSL、SQLite 及其 engine/module 目录
 
+运行时里的兼容符号链接（例如 `libcrypto.so`）复制为实体文件；Android 归档不依赖
+解包器对 tar symlink 的处理方式。
+复制后使用对应 ABI 的 NDK `llvm-strip --strip-unneeded` 去除运行时 `.so` 的本地
+调试符号，保留动态链接所需符号。
+
 不应带入：
 
 - `include/`
 - `lib/pkgconfig/`
 - 构建目录、对象文件、下载缓存
 - pip/ensurepip 的可引导安装内容
+- `config-*`、`idlelib`、`pydoc_data`、`tkinter`、`turtledemo` 等桌面/构建侧标准库内容
 - `__pycache__`
 
 `bundle/bin/python3` 是一个 Android PIE 可执行文件，入口实现只调用 `Py_BytesMain`。它必须使用 `/system/bin/linker64` 作为 ELF interpreter，并动态链接 `libpython3.13.so`。新生产的 launcher 源码位于 `scripts/launcher.c`，并由构建脚本使用对应 ABI 的 CPython Android 工具链编译。
