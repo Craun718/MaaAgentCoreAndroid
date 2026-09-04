@@ -1,6 +1,6 @@
 # Release 包生产流程
 
-本文说明 `MaaAgentCoreAndroid` release 资产的组成、生产步骤和验收标准。当前仓库包含 `scripts/build_agent_core.py` 生产脚本和手动触发的 `Release agent core` GitHub Actions 工作流，因此本文分为两类内容：
+本文说明 `MaaAgentCoreAndroid` 构建产物的组成、生产步骤和验收标准。当前仓库包含 `scripts/build_agent_core.py` 生产脚本和手动触发的 `Build agent core` GitHub Actions 工作流，因此本文分为两类内容：
 
 - **已确认**：来自已发布包、wheel 元数据和下游消费脚本的实物事实。
 - **生产规范**：手动 CI 和 `scripts/build_agent_core.py` 执行的流程。旧 release 在这些脚本入库前发布，不能表述为由当前自动化生成。
@@ -481,8 +481,10 @@ stage/<abi>/bundle/agent-core.json
 
 ### 真机验收
 
-手动 CI 只执行上述静态验收并创建 draft release，不会启动模拟器或真机。
-发布前至少在两个真实 Android 设备或模拟器上分别覆盖两个 ABI。测试环境必须提供与 manifest 一致的 MaaFramework Android 原生库。
+手动 CI 只执行上述静态验收并上传 Actions artifact，不会启动模拟器、
+真机或 GitHub Release。对外使用前至少在两个真实 Android 设备或模拟器上
+分别覆盖两个 ABI。测试环境必须提供与 manifest 一致的 MaaFramework
+Android 原生库。
 
 真机冒烟内容：
 
@@ -556,20 +558,22 @@ tar -tzf dist/agent-core-3.13.15-x86_64.tar.gz >/dev/null
 
 当前 `3.13.15-maafw5.12.3` 归档的 owner/group 已是 `0`，大部分 mode 被归一为目录 `0777`、文件 `0666`；两个 `bin/python3` 也不是可执行位，下游直接执行前必须先 `chmod`。此外，不同生成阶段的 mtime 不一致，且未固定 gzip 元数据。因此它不能被描述为 byte-for-byte reproducible。上述固定元数据流程是后续版本的规范；它不会逐字节复现当前资产。
 
-## 11. 发布 GitHub Release
+## 11. 获取 Actions 构建产物
 
-手动 CI 的发布流程：
+手动 CI 的产物获取流程：
 
-1. 确认要构建的 commit，并在 Actions 页面手动运行 `Release agent core`。
-2. CI 编译、打包、静态验收，并创建 draft release。Beta 版本会带 prerelease 标记。
-3. CI 上传两个 `.tar.gz` 资产、`SHA256SUMS` 和 `build-metadata.json`；release notes 记录版本矩阵和最终 SHA-256。
-4. 从 GitHub 下载 URL 重新下载资产，校验 SHA-256 与 `SHA256SUMS` 一致。
+1. 确认要构建的 commit，并在 Actions 页面手动运行 `Build agent core`。
+2. CI 编译、打包、静态验收，并上传名为
+   `agent-core-<python>-maafw<maafw>` 的 Actions artifact。
+3. artifact 包含两个 `.tar.gz`、`SHA256SUMS`、`build-metadata.json` 和
+   `release-notes.md`。浏览器下载 artifact 后先解外层 ZIP。
+4. 校验两个 `.tar.gz` 的 SHA-256 与 `SHA256SUMS` 一致。
 5. 准备匹配版本的 MaaFramework 原生库，完成第 9 节真机验收。
-6. 把已测 Android 环境和结果补充到 release notes。
-7. 人工发布 release。若已存在同名 release 或 tag，CI 拒绝覆盖。
-8. 发布后用下游打包脚本走一次完整消费，确认新 release URL、manifest、site-packages 叠加安装都可用。
+6. 用下游打包脚本走一次完整消费，确认 manifest、site-packages 叠加安装都可用。
 
-Release notes 不应声称包含 MaaFramework 原生库。若宿主所需的 MaaFramework Android 包有独立发布地址，应链接到对应的 `5.12.3` release。
+该工作流不会创建 tag 或 GitHub Release。`release-notes.md` 不应声称包含
+MaaFramework 原生库。若宿主所需的 MaaFramework Android 包有独立发布地址，
+应记录对应的 `5.12.3` 下载链接。
 
 ## 12. 下游兼容规则
 
@@ -588,7 +592,7 @@ Release notes 不应声称包含 MaaFramework 原生库。若宿主所需的 Maa
 
 当前限制：
 
-- CI 只执行静态验收和 draft 上传，不包含 Android 真机冒烟；发布必须保留人工门槛。
+- CI 只执行静态验收和 Actions artifact 上传，不包含 Android 真机冒烟；对外使用必须保留人工门槛。
 - 仓库没有离线完整输入锁定文件；CPython Android 依赖仍由官方脚本按源码内版本下载。
 - 当前包的二进制元数据显示 launcher 与 `libpython3.13.so` 来自不同 NDK 版本，精确构建来源不可追溯。
 - 当前包的 numpy/StrEnum `RECORD` 是裁剪前的旧清单，包含不存在的 `__pycache__`、tests、f2py 和 entry-point 路径；例如 arm64 包中 numpy 有 951 个悬空行、StrEnum 有 4 个悬空行。它不能作为包元数据完整性验收基线，下个 release 必须重新生成。
@@ -599,7 +603,7 @@ Release notes 不应声称包含 MaaFramework 原生库。若宿主所需的 Maa
 
 后续固化建议：
 
-1. 为两个 ABI 增加可复用的真机或模拟器冒烟矩阵，并把结果记录到 release notes。
+1. 为两个 ABI 增加可复用的真机或模拟器冒烟矩阵，并把结果记录到构建元数据。
 2. 增加离线输入锁存和校验，避免构建过程依赖外部下载地址的可用性。
 3. 保留上一版到下一版的二进制对比报告，区分运行时变更与 site-packages 变更。
 4. 固化 GitHub Actions runner 与 Android SDK/NDK 的可追溯环境信息。

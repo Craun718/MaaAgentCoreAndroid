@@ -1,4 +1,4 @@
-name: Release agent core
+name: Build agent core
 
 on:
   workflow_dispatch:
@@ -13,10 +13,10 @@ on:
         default: "5.12.3"
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: release-agent-core
+  group: build-agent-core
   cancel-in-progress: false
 
 jobs:
@@ -71,33 +71,21 @@ jobs:
           with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as handle:
               handle.write(f"python_version={metadata['pythonVersion']}\n")
               handle.write(f"maafw_version={metadata['maafwVersion']}\n")
-              handle.write(f"release_tag={metadata['pythonVersion']}-maafw{metadata['maafwVersion']}\n")
-              handle.write(f"maafw_prerelease={str(metadata['maafwPrerelease']).lower()}\n")
+              handle.write(
+                  f"artifact_name=agent-core-{metadata['pythonVersion']}"
+                  f"-maafw{metadata['maafwVersion']}\n"
+              )
           PY
 
-      - name: Create draft release and upload archives
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ steps.build.outputs.release_tag }}
-          RELEASE_TITLE: ${{ steps.build.outputs.python_version }} / MaaFramework ${{ steps.build.outputs.maafw_version }}
-          MAAFW_PRERELEASE: ${{ steps.build.outputs.maafw_prerelease }}
-          DIST_DIR: ${{ runner.temp }}/agent-core-build/dist
-        run: |
-          if git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG" >/dev/null 2>&1; then
-            echo "Tag $RELEASE_TAG already exists; refusing to overwrite it." >&2
-            exit 1
-          fi
-          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Release $RELEASE_TAG already exists; refusing to overwrite assets." >&2
-            exit 1
-          fi
-          flags=(--draft --target "$GITHUB_SHA" --title "$RELEASE_TITLE" --notes-file "$DIST_DIR/release-notes.md")
-          if [[ "$MAAFW_PRERELEASE" == "true" ]]; then
-            flags+=(--prerelease)
-          fi
-          assets=(
-            "$DIST_DIR"/agent-core-*.tar.gz
-            "$DIST_DIR/SHA256SUMS"
-            "$DIST_DIR/build-metadata.json"
-          )
-          gh release create "$RELEASE_TAG" "${flags[@]}" "${assets[@]}" --repo "$GITHUB_REPOSITORY"
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.build.outputs.artifact_name }}
+          path: |
+            ${{ runner.temp }}/agent-core-build/dist/agent-core-*.tar.gz
+            ${{ runner.temp }}/agent-core-build/dist/SHA256SUMS
+            ${{ runner.temp }}/agent-core-build/dist/build-metadata.json
+            ${{ runner.temp }}/agent-core-build/dist/release-notes.md
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
