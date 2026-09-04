@@ -560,20 +560,78 @@ tar -tzf dist/agent-core-3.13.15-x86_64.tar.gz >/dev/null
 
 ## 11. 获取 Actions 构建产物
 
-手动 CI 的产物获取流程：
+### 11.1 网页触发
 
-1. 确认要构建的 commit，并在 Actions 页面手动运行 `Build agent core`。
-2. CI 编译、打包、静态验收，并上传名为
-   `agent-core-<python>-maafw<maafw>` 的 Actions artifact。
-3. artifact 包含两个 `.tar.gz`、`SHA256SUMS`、`build-metadata.json` 和
-   `build-report.md`。浏览器下载 artifact 后先解外层 ZIP。
-4. 校验两个 `.tar.gz` 的 SHA-256 与 `SHA256SUMS` 一致。
-5. 准备匹配版本的 MaaFramework 原生库，完成第 9 节真机验收。
-6. 用下游打包脚本走一次完整消费，确认 manifest、site-packages 叠加安装都可用。
+触发仓库主线上的 workflow 需要 GitHub 写权限；没有写权限时，先在自己
+的 fork 中运行同一 workflow。
+
+1. 打开仓库的 **Actions** 页面。
+2. 在左侧选择 **Build agent core**。
+3. 点击 **Run workflow**。
+4. 分支选择要构建的分支，通常是 `main`。
+5. 填写两个输入：
+
+   | 输入 | 值 |
+   |---|---|
+   | `python-version` | 稳定版 CPython `3.x.y`，例如 `3.13.15` |
+   | `maafw-version` | MaaFramework 版本，例如 `5.12.3` 或 `5.13.0-beta.1`；后者会规范化为 `5.13.0b1` |
+
+6. 点击 **Run workflow**，进入新 run 页面等待完成。
+
+workflow 的 concurrency 配置会串行调度构建，且不会取消已开始的 run。
+
+### 11.2 GitHub CLI 触发
+
+工作流文件是 `.github/workflows/release.yml`。以下命令默认在仓库检出目录
+执行；不在检出目录时，给每条命令追加 `--repo <owner>/<repository>`：
+
+```bash
+gh workflow run release.yml \
+  --ref main \
+  -f python-version=3.13.15 \
+  -f maafw-version=5.13.0-beta.1
+```
+
+查询最新 run：
+
+```bash
+gh run list --workflow release.yml --limit 5
+```
+
+跟踪指定 run：
+
+```bash
+gh run watch <run-id>
+```
+
+### 11.3 下载和校验
+
+run 成功后，在其页面下方的 **Artifacts** 区域下载
+`agent-core-<python>-maafw<maafw>`。也可以用 GitHub CLI 下载：
+
+```bash
+gh run download <run-id> \
+  --name agent-core-3.13.15-maafw5.13.0b1 \
+  --dir agent-core-artifact
+```
+
+浏览器下载的 artifact 是外层 ZIP，先解开后确认包含两个 `.tar.gz`、
+`SHA256SUMS`、`build-metadata.json` 和 `build-report.md`。`gh run download`
+会直接解出这些文件。然后在 artifact 目录执行：
+
+```bash
+shasum -a 256 --check SHA256SUMS
+```
+
+校验通过后：
+
+1. 准备匹配版本的 MaaFramework 原生库，完成第 9 节真机验收。
+2. 用下游打包脚本走一次完整消费，确认 manifest、site-packages 叠加安装都可用。
 
 该工作流不会创建 tag 或 GitHub Release。`build-report.md` 不应声称包含
-MaaFramework 原生库。若宿主所需的 MaaFramework Android 包有独立发布地址，
-应记录对应的 `5.12.3` 下载链接。
+MaaFramework 原生库。artifact 默认保留 30 天；需要长期保存时必须在过期前
+下载并归档。若宿主所需的 MaaFramework Android 包有独立发布地址，应在构建
+报告中记录对应版本的下载链接。
 
 ## 12. 下游兼容规则
 

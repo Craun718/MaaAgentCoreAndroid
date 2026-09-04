@@ -23,9 +23,21 @@ CPython `3.x.y` 版本和 MaaFramework 版本。MaaFramework 使用 PyPI 的规�
 `5.13.0-beta.1` 会按 `5.13.0b1` 下载、写入 manifest 并生成
 `agent-core-3.13.15-maafw5.13.0b1` artifact。
 
+也可以从仓库检出目录用 GitHub CLI 触发：
+
+```bash
+gh workflow run release.yml \
+  --ref main \
+  -f python-version=3.13.15 \
+  -f maafw-version=5.13.0-beta.1
+``+
+用 `gh run list --workflow release.yml --limit 1` 找到 run ID，再从该 run
+的 Artifacts 区域下载产物。artifact 是外层 ZIP，解开后才是两个 `.tar.gz`、
+`SHA256SUMS`、`build-metadata.json` 和 `build-report.md`。
+
 CI 会编译两个 Android ABI、执行静态验收、生成确定性归档并上传 Actions
-artifact，不会创建 GitHub Release 或 tag。静态验收不包含 Android 真机
-冒烟；对外使用前必须提供匹配版本的
+artifact，不会创建 GitHub Release 或 tag；默认保留 30 天。静态验收不包含
+Android 真机冒烟；对外使用前必须提供匹配版本的
 MaaFramework 原生库并完成真机测试。
 
 
