@@ -1,13 +1,13 @@
-# Release 包生产流程
+# 构建产物生产流程
 
 本文说明 `MaaAgentCoreAndroid` 构建产物的组成、生产步骤和验收标准。当前仓库包含 `scripts/build_agent_core.py` 生产脚本和手动触发的 `Build agent core` GitHub Actions 工作流，因此本文分为两类内容：
 
 - **已确认**：来自已发布包、wheel 元数据和下游消费脚本的实物事实。
 - **生产规范**：手动 CI 和 `scripts/build_agent_core.py` 执行的流程。旧 release 在这些脚本入库前发布，不能表述为由当前自动化生成。
 
-## 1. Release 命名与版本矩阵
+## 1. 产物命名与版本矩阵
 
-当前 release：
+已确认的历史 release（仅作实物对照，当前 CI 不再复用该发布方式）：
 
 | 项目 | 值 |
 |---|---|
@@ -29,9 +29,9 @@ agent-core-<python-version>-<android-abi>.tar.gz
 
 手动 CI 的 MaaFramework 输入使用 PyPI 规范版本号。为兼容常见的
 `-beta.x` 写法，脚本先把它规范化为 `bx`，后续 wheel 查询、manifest、
-release tag 和 prerelease 标记都使用规范化结果：
+artifact 名称后缀和 prerelease 标记都使用规范化结果：
 
-| 手动输入 | 规范化版本 | Release tag 后缀 |
+| 手动输入 | 规范化版本 | Artifact 版本后缀 |
 |---|---|---|
 | `5.12.3` | `5.12.3` | `maafw5.12.3` |
 | `5.13.0-beta.1` | `5.13.0b1` | `maafw5.13.0b1` |
@@ -265,7 +265,7 @@ stage/<abi>/bundle/prefix/
 
 ### 5.2 运行时不变时的复用
 
-如果只更新 `maa`、numpy、StrEnum 或 manifest，而 CPython 运行时保持不变，可以先下载上一版已验证 release，校验 SHA-256 后：
+如果只更新 `maa`、numpy、StrEnum 或 manifest，而 CPython 运行时保持不变，可以先下载上一版已验证构建产物，校验 SHA-256 后：
 
 1. 解包到干净目录。
 2. 只保留对应 ABI 的 `bundle/bin/` 与 `bundle/prefix/`。
@@ -460,11 +460,11 @@ stage/<abi>/bundle/agent-core.json
 
 版本变化时同步更新：
 
-- release tag 和标题
+- artifact 名称和构建报告
 - README 的资产表
 - `common`
 - 输入 wheel 文件名与哈希
-- release notes 中的版本矩阵
+- 构建报告中的版本矩阵
 
 ## 9. 静态验收
 
@@ -566,12 +566,12 @@ tar -tzf dist/agent-core-3.13.15-x86_64.tar.gz >/dev/null
 2. CI 编译、打包、静态验收，并上传名为
    `agent-core-<python>-maafw<maafw>` 的 Actions artifact。
 3. artifact 包含两个 `.tar.gz`、`SHA256SUMS`、`build-metadata.json` 和
-   `release-notes.md`。浏览器下载 artifact 后先解外层 ZIP。
+   `build-report.md`。浏览器下载 artifact 后先解外层 ZIP。
 4. 校验两个 `.tar.gz` 的 SHA-256 与 `SHA256SUMS` 一致。
 5. 准备匹配版本的 MaaFramework 原生库，完成第 9 节真机验收。
 6. 用下游打包脚本走一次完整消费，确认 manifest、site-packages 叠加安装都可用。
 
-该工作流不会创建 tag 或 GitHub Release。`release-notes.md` 不应声称包含
+该工作流不会创建 tag 或 GitHub Release。`build-report.md` 不应声称包含
 MaaFramework 原生库。若宿主所需的 MaaFramework Android 包有独立发布地址，
 应记录对应的 `5.12.3` 下载链接。
 
@@ -586,7 +586,7 @@ MaaFramework 原生库。若宿主所需的 MaaFramework Android 包有独立发
 5. 用 PEP 503 规则规范化依赖名。命中 `provides` 且项目约束与提供版本兼容时不要重复安装；版本不兼容时必须报出显式冲突，不能把不兼容 pin 静默当作已满足。
 6. `maaagentbinary` 是桌面端可执行包，Android 上应依赖宿主 `nativeLibraryDir` 或等价路径，不安装该包。
 7. MaaFramework 原生库由宿主提供，版本必须与 manifest 的 `maafw` 匹配。
-8. 更新任何二进制输入都必须发新 release 和新资产，不能覆盖已上传资产。
+8. 更新任何二进制输入都必须生成新的 Actions artifact，不能复用或覆盖旧产物。
 
 ## 13. 当前限制与待固化事项
 
@@ -595,7 +595,7 @@ MaaFramework 原生库。若宿主所需的 MaaFramework Android 包有独立发
 - CI 只执行静态验收和 Actions artifact 上传，不包含 Android 真机冒烟；对外使用必须保留人工门槛。
 - 仓库没有离线完整输入锁定文件；CPython Android 依赖仍由官方脚本按源码内版本下载。
 - 当前包的二进制元数据显示 launcher 与 `libpython3.13.so` 来自不同 NDK 版本，精确构建来源不可追溯。
-- 当前包的 numpy/StrEnum `RECORD` 是裁剪前的旧清单，包含不存在的 `__pycache__`、tests、f2py 和 entry-point 路径；例如 arm64 包中 numpy 有 951 个悬空行、StrEnum 有 4 个悬空行。它不能作为包元数据完整性验收基线，下个 release 必须重新生成。
+- 当前包的 numpy/StrEnum `RECORD` 是裁剪前的旧清单，包含不存在的 `__pycache__`、tests、f2py 和 entry-point 路径；例如 arm64 包中 numpy 有 951 个悬空行、StrEnum 有 4 个悬空行。它不能作为包元数据完整性验收基线，下个构建必须重新生成。
 - 当前包的两个 launcher 归档 mode 都是 `0666`，不是可执行文件。下游必须先调整权限；后续包按第 10 节归一为 `0755`。
 - 当前归档元数据不完全确定，不能宣称 byte-for-byte 可复现。
 - 包内没有 MaaFramework 原生库，真机测试必须准备宿主侧 native 库。

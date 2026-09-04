@@ -85,7 +85,7 @@ jobs:
             ${{ runner.temp }}/agent-core-build/dist/agent-core-*.tar.gz
             ${{ runner.temp }}/agent-core-build/dist/SHA256SUMS
             ${{ runner.temp }}/agent-core-build/dist/build-metadata.json
-            ${{ runner.temp }}/agent-core-build/dist/release-notes.md
+            ${{ runner.temp }}/agent-core-build/dist/build-report.md
           if-no-files-found: error
           compression-level: 0
           retention-days: 30
