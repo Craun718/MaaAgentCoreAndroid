@@ -1,178 +1,107 @@
 # 构建产物生产流程
 
-本文说明 `MaaAgentCoreAndroid` 构建产物的组成、生产步骤和验收标准。当前仓库包含 `scripts/build_agent_core.py` 生产脚本和手动触发的 `Build agent core` GitHub Actions 工作流，因此本文分为两类内容：
+本文说明 `MaaAgentCoreAndroid` 构建产物的组成、生产步骤和验收标准。当前仓库包含 `scripts/build_agent_core.py` 生产脚本和 `Build agent core` GitHub Actions 工作流；第 1 节介绍 GitHub Actions 自动构建，第 2 节起介绍可选的本地手动构建。本地手动构建用于复现发布产物，不是日常开发或贡献的前置要求。
 
-- **已确认**：来自已发布包、wheel 元数据和下游消费脚本的实物事实。
-- **生产规范**：手动 CI 和 `scripts/build_agent_core.py` 执行的流程。旧 release 在这些脚本入库前发布，不能表述为由当前自动化生成。
+## 1. 自动构建
 
-## 1. 产物命名与版本矩阵
+自动构建通过 `Build agent core` workflow 完成。可以在 GitHub 网页上启动，
+也可以用 GitHub CLI 触发；两种方式只负责提交输入，实际编译、验收和打包
+都发生在 GitHub Actions runner 上。
 
-已确认的历史 release（仅作实物对照，当前 CI 不再复用该发布方式）：
+### 1.1 网页触发
 
-| 项目 | 值 |
-|---|---|
-| Tag | `3.13.15-maafw5.12.3` |
-| 标题 | `CPython 3.13.15 / MaaFramework 5.12.3` |
-| Python | `3.13.15` |
-| Python ABI tag | `cp313` |
-| MaaFramework Python binding | `5.12.3` |
-| numpy | `2.3.2` |
-| StrEnum | `0.4.15` |
-| Android ABI | `arm64-v8a`, `x86_64` |
-| 接受的 Android wheel API level | `24`, `21`, `16` |
+触发仓库主线上的 workflow 需要 GitHub 写权限；没有写权限时，先在自己
+的 fork 中运行同一 workflow。
 
-资产命名固定为：
+1. 打开仓库的 **Actions** 页面。
+2. 在左侧选择 **Build agent core**。
+3. 点击 **Run workflow**。
+4. 分支选择要构建的分支，通常是 `main`。
+5. 填写两个输入：
 
-```text
-agent-core-<python-version>-<android-abi>.tar.gz
+   | 输入 | 值 |
+   |---|---|
+   | `python-version` | 稳定版 CPython `3.x.y`，例如 `3.13.15` |
+   | `maafw-version` | MaaFramework 版本，例如 `5.12.3` 或 `5.13.0-beta.1`；后者会规范化为 `5.13.0b1` |
+
+6. 点击 **Run workflow**，进入新 run 页面等待完成。
+
+workflow 的 concurrency 配置会串行调度构建，且不会取消已开始的 run。
+
+### 1.2 GitHub CLI 触发
+
+工作流文件是 `.github/workflows/release.yml`。以下命令默认在仓库检出目录
+执行；不在检出目录时，给每条命令追加 `--repo <owner>/<repository>`：
+
+```bash
+gh workflow run release.yml \
+  --ref main \
+  -f python-version=3.13.15 \
+  -f maafw-version=5.13.0-beta.1
 ```
 
-手动 CI 的 MaaFramework 输入使用 PyPI 规范版本号。为兼容常见的
-`-beta.x` 写法，脚本先把它规范化为 `bx`，后续 wheel 查询、manifest、
-artifact 名称后缀和 prerelease 标记都使用规范化结果：
+查询最新 run：
 
-| 手动输入 | 规范化版本 | Artifact 版本后缀 |
-|---|---|---|
-| `5.12.3` | `5.12.3` | `maafw5.12.3` |
-| `5.13.0-beta.1` | `5.13.0b1` | `maafw5.13.0b1` |
-| `5.13.0b6` | `5.13.0b6` | `maafw5.13.0b6` |
-
-当前两个资产为：
-
-| 资产 | 大小 | SHA-256 |
-|---|---:|---|
-| `agent-core-3.13.15-arm64-v8a.tar.gz` | `19933789` | `ae8dda833f5d5975f2cb667d8c154fde196397734e3152282f5bcf591a468941` |
-| `agent-core-3.13.15-x86_64.tar.gz` | `22666262` | `1ee7deca52acb1046f6f7593e5a85f07770bd708353f0fd24d9ad47c599ea8f2` |
-
-各 ABI 的 wheel 信息为：
-
-| `abi` | `wheelAbi` | CPython host triple | pip platform 后缀 |
-|---|---|---|---|
-| `arm64-v8a` | `arm64_v8a` | `aarch64-linux-android` | `arm64_v8a` |
-| `x86_64` | `x86_64` | `x86_64-linux-android` | `x86_64` |
-
-## 2. 包内容契约
-
-归档必须以 ABI 目录开头，且路径精确为：
-
-```text
-<abi>/bundle/
-  agent-core.json
-  bin/
-    python3
-  prefix/
-    lib/
-      libpython3.13.so
-      libpython3.so
-      libcrypto.so
-      libcrypto_python.so
-      libssl.so
-      libssl_python.so
-      libsqlite3.so
-      libsqlite3.so.0
-      libsqlite3_python.so
-      engines-3/
-      ossl-modules/
-      python3.13/
-      python313.zip
-  site-packages/
-    maa/
-    numpy/
-    numpy.libs/
-    strenum/
-    numpy-2.3.2.dist-info/
-    StrEnum-0.4.15.dist-info/
+```bash
+gh run list --workflow release.yml --limit 5
 ```
 
-`prefix/` 是 Android CPython 运行时，`site-packages/` 是内核预置的第三方包。下游项目会把额外依赖继续安装到同一个 `site-packages/` 目录，因此这些路径是兼容性契约，不能重排。
+跟踪指定 run：
 
-`agent-core.json` 的字段固定。两个 ABI 只有 `abi` 和 `wheelAbi` 不同：
-
-```json
-{
-  "python": "3.13.15",
-  "pyAbiTag": "cp313",
-  "wheelApis": [24, 21, 16],
-  "abi": "arm64-v8a",
-  "wheelAbi": "arm64_v8a",
-  "provides": {
-    "numpy": "2.3.2",
-    "strenum": "0.4.15",
-    "maafw": "5.12.3"
-  }
-}
+```bash
+gh run watch <run-id>
 ```
 
-字段含义：
+### 1.3 下载和校验
 
-| 字段 | 用途 |
-|---|---|
-| `python` | 运行时 CPython 版本，也用于生成 pip 的 `--python-version` |
-| `pyAbiTag` | 运行时 ABI，传给 pip 的 `--abi` |
-| `wheelApis` | 依次生成多个精确的 `android_<api>_<wheelAbi>` platform |
-| `abi` | 归档内目录名和 Android ABI |
-| `wheelAbi` | Android wheel 文件名中的 ABI 后缀 |
-| `provides` | 内核已经提供的包及版本；下游应按 PEP 503 规范化包名后跳过这些依赖 |
+run 成功后，在其页面下方的 **Artifacts** 区域下载
+`agent-core-<python>-maafw<maafw>`。也可以用 GitHub CLI 下载：
 
-当前包不含 MaaFramework 的 `libMaa*.so`。`maa/` 只包含 Python binding 源码；原生库必须由 Android 宿主 App 或运行环境提供，并且版本必须与 `provides.maafw` 匹配。
-
-## 3. 输入材料与固定版本
-
-每次生产前先建立材料目录，并记录所有输入的 SHA-256。不要在构建过程中让 pip、CPython Android 脚本或依赖下载步骤自行选择新版本。
-
-### 3.1 CPython 源码
-
-用于完整重建运行时：
-
-```text
-https://www.python.org/ftp/python/3.13.15/Python-3.13.15.tgz
+```bash
+gh run download <run-id> \
+  --name agent-core-3.13.15-maafw5.13.0b1 \
+  --dir agent-core-artifact
 ```
 
-SHA-256：
+浏览器下载的 artifact 是外层 ZIP，先解开后确认包含两个 `.tar.gz`、
+`SHA256SUMS`、`build-metadata.json` 和 `build-report.md`。`gh run download`
+会直接解出这些文件。然后在 artifact 目录执行：
 
-```text
-c28d9d213c09b5b5ab2c29812950e12f746999e099b82894231be954b26baed9
+```bash
+shasum -a 256 --check SHA256SUMS
 ```
 
-CPython 3.13 起 Android 构建走官方 `Android/android.py` 流程。构建机器需要 Android SDK、NDK、JDK 17/21/25、`curl`、`java`，以及构建本机 Python 所需的编译工具。可在 Linux 或 macOS 上交叉构建。
+校验通过后：
 
-### 3.2 Python 依赖 wheel
+1. 从官方 MaaFramework GitHub 仓库 <https://github.com/MaaXYZ/MaaFramework>
+   的 Releases 下载匹配版本 Android 产物，完成第 2.7 节真机验收。
+2. 用下游打包脚本走一次完整消费，确认 manifest、site-packages 叠加安装都可用。
 
-numpy 使用 Chaquopy Android wheel index：
+该工作流不会创建 tag 或 GitHub Release。`build-report.md` 不应声称包含
+MaaFramework 原生库。artifact 默认保留 30 天；需要长期保存时必须在过期前
+下载并归档。若宿主所需的 MaaFramework Android 包有独立发布地址，应在构建
+报告中记录对应版本的下载链接。
 
-```text
-https://chaquo.com/pypi-upstream/
-```
+## 2. 手动构建
 
-固定输入为：
+本节描述可选的本地手动构建。如需在本机生成发布形态的归档，建议先准备
+Android SDK、JDK、`ANDROID_HOME` 和构建脚本所需的命令行工具，再从仓库检出
+目录运行脚本；脚本会下载输入、创建工作目录、完成编译、静态验收和打包。
+日常调试或贡献代码不需要先执行这套流程。
 
-| 文件 | SHA-256 |
-|---|---|
-| `numpy-2.3.2-1-cp313-cp313-android_24_arm64_v8a.whl` | `f7beb51f8d162c110ee8d4c9e275f490ce39dddba919643d949687bb4286bedd` |
-| `numpy-2.3.2-1-cp313-cp313-android_24_x86_64.whl` | `17e5ffa985ad510831654610c9ab1558f031875379d1a18a0439d4cee1126705` |
-| `StrEnum-0.4.15-py3-none-any.whl` | `a30cda4af7cc6b5bf52c8055bc4bf4b2b6b14a93b574626da33df53cf7740659` |
+发布产物统一使用 Android NDK `28.2.13676358`。当前
+<https://github.com/Aliothmoon/MaaFwApp> 的 `MaaFwApp` 主线没有
+显式配置 `ndkVersion`，而是使用 Android Gradle Plugin `9.2.1`；该版本
+AGP 的默认 NDK 为 `28.2.13676358`。
 
-手动 CI 中 Python 和 MaaFramework 版本来自 workflow 输入；numpy/StrEnum
-版本由脚本固定。构建产出的 `build-metadata.json` 会记录实际下载的 Python
-源码包、maafw wheel 和 runtime wheel SHA-256。
+`scripts/build_agent_core.py` 会在解包 CPython 后，把官方
+`Android/android-env.sh` 中的 `ndk_version` 显式改成该值。后续 CPython host
+构建、`llvm-strip` 和 launcher 编译都由这份配置解析工具链；构建脚本还会
+校验实际安装的 NDK revision，并把结果写入 `build-metadata.json` 与
+`build-report.md`。因此发布构建不会隐式选择本机已有的其它 NDK，本地开发者
+也不需要为此手动预装或切换 NDK。
 
-### 3.3 Maa Python binding
-
-当前包的 `maa/*.py` 与 PyPI `maafw==5.12.3` wheel 内的 Python 源码一致，只有 `maa/library.py` 带 Android 平台名补丁。生产时选择一个 PyPI wheel 作为源材料并固定哈希。本轮核对使用：
-
-```text
-maafw-5.12.3-py3-none-manylinux2014_aarch64.whl
-```
-
-SHA-256：
-
-```text
-6c2c6af0f99508d0cce13d2c041f10813576158eb567a68225d908fffb34897f
-```
-
-这里只使用 wheel 里的纯 Python 文件；wheel 自带的 Linux 原生库不进入本包。
-
-## 4. 工作目录与准备
+### 2.1 工作目录与准备
 
 每个 ABI 单独 staging，最终只把 `<abi>/bundle` 写入归档：
 
@@ -197,7 +126,7 @@ work/
 
 建议每次从空目录开始。复用缓存时必须验证输入哈希，并删除旧 `stage/` 与旧 `dist/`，避免上一个 ABI 的 `.so`、dist-info 或 manifest 混入新包。
 
-手动 CI 调用：
+本地手动构建时调用：
 
 ```bash
 python scripts/build_agent_core.py \
@@ -206,9 +135,9 @@ python scripts/build_agent_core.py \
   --work-dir "$AGENT_CORE_WORK_DIR"
 ```
 
-## 5. 生成 CPython 运行时
+### 2.2 生成 CPython 运行时
 
-### 5.1 完整重建
+#### 2.2.1 完整重建
 
 当前包的运行时布局、Android wheel 生态和 launcher 形态与 Chaquopy 生态使用的 CPython Android 产物兼容；Chaquopy 的公开 target 脚本也是使用 CPython 3.13 的官方 `Android/android.py` 流程构建 `arm64-v8a` 与 `x86_64`。但这只能说明技术路线一致，不能证明当前二进制来自哪个 Chaquopy Maven 版本或 build 编号。在仓库记录精确来源之前，不应做更强的溯源声明。
 
@@ -238,19 +167,20 @@ python android.py make-host aarch64-linux-android --cross-build-dir "$WORK/cross
 stage/<abi>/bundle/prefix/
 ```
 
-需要保留的内容包括：
+从 `prefix/lib` 按允许清单提取，而不是先完整复制 `prefix/` 再做删除：
 
 - `lib/libpython3.13.so` 和 `lib/libpython3.so`
 - Python 扩展模块和标准库数据所在的 `lib/python3.13/`
 - 压缩标准库 `lib/python313.zip`
 - OpenSSL、SQLite 及其 engine/module 目录
+- 运行时动态链接所需的其它 `lib*.so*` 文件
 
 运行时里的兼容符号链接（例如 `libcrypto.so`）复制为实体文件；Android 归档不依赖
 解包器对 tar symlink 的处理方式。
 复制后使用对应 ABI 的 NDK `llvm-strip --strip-unneeded` 去除运行时 `.so` 的本地
 调试符号，保留动态链接所需符号。
 
-不应带入：
+以下内容只作为提取后的排除校验，不进入允许清单：
 
 - `include/`
 - `lib/pkgconfig/`
@@ -263,7 +193,7 @@ stage/<abi>/bundle/prefix/
 
 当前已发布包没有记录 launcher 的原始源码和确切构建命令。产物元数据显示 launcher 由 Android NDK `r29-beta2` / Clang 20 构建，而 `libpython3.13.so` 中可见 NDK `r27d` 标记；这说明当前包不是一次完整、可追溯的单工具链构建。
 
-### 5.2 运行时不变时的复用
+#### 2.2.2 运行时不变时的复用
 
 如果只更新 `maa`、numpy、StrEnum 或 manifest，而 CPython 运行时保持不变，可以先下载上一版已验证构建产物，校验 SHA-256 后：
 
@@ -274,7 +204,21 @@ stage/<abi>/bundle/prefix/
 
 这种方式可以避免临时重造运行时，但它不是完整生产方案；Python、NDK、依赖库或 launcher 任一变化时仍必须完整重建并重新做真机验收。
 
-## 6. 安装预置 Python 包
+#### 2.2.3 进程与并发语义
+
+Android CPython 运行时不包含 `_multiprocessing` 扩展。`multiprocessing`
+顶层模块存在不代表进程创建可用；`multiprocessing.Process`、需要进程启动器的
+`concurrent.futures.ProcessPoolExecutor`，以及依赖这些 API 的库，都不能作为
+本内核的运行时契约。
+
+Agent 载荷应默认单进程执行，需要并发时优先使用线程、协程或异步 I/O，并遵守
+Python GIL 与 Android 线程限制。确实需要跨进程能力时，应放在宿主 App、
+Android service/process 边界或 MaaFramework Agent IPC 边界中实现；
+`MaaAgentServerStartUp` 与 MaaFramework 的通信是跨进程集成，不会为 Python
+载荷重新启用 `multiprocessing` 语义。依赖硬性要求 `multiprocessing` 的包，
+必须在下游自行提供兼容方案并验收，不能默认由本内核承担。
+
+### 2.3 安装预置 Python 包
 
 对每个 ABI 执行 pip 的目标目录安装。pip 只做 wheel 文件名 tag 匹配，不在 Android 上执行 setup/build，因此必须使用 `--only-binary=:all:` 并列出精确 platform。预置包的依赖集合是固定的，安装时应使用 `--no-deps`；发现缺失依赖时更新版本矩阵和输入清单，而不是让 pip 自动选择新包。
 
@@ -324,7 +268,18 @@ python3 -m pip install \
 - StrEnum 是 `py3-none-any`。
 - `numpy.libs/` 中的 `libc++_shared`、`libgfortran`、`libopenblas` 与 ABI 匹配。
 
-安装后按当前包契约裁剪 site-packages：
+site-packages 同样按提取契约生成。允许进入 `<abi>/bundle/site-packages/`
+的初始根只有：
+
+- `numpy/`
+- `numpy.libs/`
+- `numpy-<version>.dist-info/`
+- `strenum/`
+- `StrEnum-<version>.dist-info/`
+
+其中 `numpy/testing/` 必须保留；`numpy.testing` 是运行时公开 API。`bin/`、
+`f2py`、`_pyinstaller`、各级 `tests/`、`__pycache__` 和 `.pyc` 不属于提取
+契约。pip 目标安装后可用以下命令做裁剪和兜底校验：
 
 ```bash
 rm -rf \
@@ -384,7 +339,7 @@ for dist_info_name, owned_roots in packages.items():
 
 版本变化时同步更新 dist-info 名称和 owned roots。生产脚本会裁剪后重新生成 numpy 和 StrEnum 的 `RECORD`，不要手改这些清单。
 
-## 7. 收录并补丁 `maa`
+### 2.4 收录并补丁 `maa`
 
 从固定的 `maafw` wheel 解出内容，只复制 `maa/` 目录到：
 
@@ -422,7 +377,23 @@ if platform_type == "android":
 
 当前发布包中的 `maa/library.py` 是 CRLF 行尾；PyPI wheel 是 LF 行尾。后续重建时建议以 LF 源文件为基础，只提交上述最小逻辑差异，避免整文件行尾噪声。
 
-## 8. 生成 manifest
+### 2.5 MaaFramework 原生库供给
+
+本内核只提供 Python binding，不收录 MaaFramework 原生库。真机验收和宿主
+App 所需的 Android `.so` 必须从官方 MaaFramework GitHub 仓库
+<https://github.com/MaaXYZ/MaaFramework> 的 Releases 下载，版本 tag 与
+manifest 的 `maafw` 精确匹配。按 ABI 选择官方 Release 资产：
+
+| ABI | 官方资产 |
+|---|---|
+| `arm64-v8a` | `MAA-android-aarch64-v<version>.zip` |
+| `x86_64` | `MAA-android-x86_64-v<version>.zip` |
+
+不要使用第三方镜像、PyPI wheel 内的平台可执行文件或本地重编产物替代官方
+Release 输入。下载后记录资产名、tag 和 SHA-256，再部署到宿主
+`nativeLibraryDir` 或等价目录。
+
+### 2.6 生成 manifest
 
 manifest 必须由版本矩阵生成，不能手抄后留下旧值。使用 UTF-8、JSON、两个空格缩进，并在文件末尾保留一个换行。
 
@@ -466,7 +437,7 @@ stage/<abi>/bundle/agent-core.json
 - 输入 wheel 文件名与哈希
 - 构建报告中的版本矩阵
 
-## 9. 静态验收
+### 2.7 静态验收
 
 打包前对每个 ABI 执行：
 
@@ -479,12 +450,12 @@ stage/<abi>/bundle/agent-core.json
 7. 双向校验 dist-info `RECORD`：包内每个归属文件都有对应行，`RECORD` 每个非空行都指向存在文件，且 hash、大小一致；license 文件仍存在。`maa` 有意不带 dist-info，不参与该校验。
 8. 重新对比 `maa` 与源 wheel，确认只有 `library.py` 的目标补丁差异。
 
-### 真机验收
+#### 真机验收
 
-手动 CI 只执行上述静态验收并上传 Actions artifact，不会启动模拟器、
-真机或 GitHub Release。对外使用前至少在两个真实 Android 设备或模拟器上
-分别覆盖两个 ABI。测试环境必须提供与 manifest 一致的 MaaFramework
-Android 原生库。
+自动构建只执行上述静态验收并上传 Actions artifact，不会启动模拟器、
+真机或 GitHub Release。选择本地手动构建生成对外产物时，先完成静态验收。
+对外使用前至少在两个真实 Android 设备或模拟器上分别覆盖两个 ABI。测试环境
+必须提供与 manifest 一致的 MaaFramework Android 原生库。
 
 真机冒烟内容：
 
@@ -519,9 +490,19 @@ print(platform.machine(), manifest["abi"], np.__version__)
 
 除了 import 和 numpy 计算外，还应执行一次实际 `maa.Library.open()` 和项目侧 agent 通信冒烟，确认平台名补丁和宿主原生库版本可用。
 
-## 10. 打包
+### 2.8 打包
 
 打包输入根目录是 `stage/`，归档内必须从 `<abi>/bundle/...` 开始，不能多出 `stage/`、`work/` 或绝对路径。
+
+打包前先对每个 ABI 执行权限归一：
+
+```bash
+find stage/<abi>/bundle -type d -exec chmod 0755 {} +
+chmod 0755 stage/<abi>/bundle/bin/python3
+find stage/<abi>/bundle -type f \
+  ! -path 'stage/<abi>/bundle/bin/python3' \
+  -exec chmod 0644 {} +
+```
 
 推荐使用固定元数据生成后续版本，例如固定时间戳、UID/GID 为 `0`、排序文件名，并对目录和可执行文件使用可执行位、普通文件使用读写位。Linux GNU tar 的示意命令如下：
 
@@ -552,116 +533,27 @@ tar -tzf dist/agent-core-3.13.15-arm64-v8a.tar.gz >/dev/null
 tar -tzf dist/agent-core-3.13.15-x86_64.tar.gz >/dev/null
 ```
 
-再解包到新的空目录，重复第 9 节静态验收。
+再解包到新的空目录，重复第 2.7 节静态验收。
 
-打包前先做权限归一：目录 `0755`、`bin/python3` `0755`、普通文件 `0644`。如果运行时启动要求其它可执行位，必须在文档和验收清单中显式记录。静态验收必须直接检查归档条目的 mode，而不是只检查解包后 staging 目录。
+权限归一后的期望是：目录 `0755`、`bin/python3` `0755`、普通文件 `0644`。
+如果运行时启动要求其它可执行位，必须在文档和验收清单中显式记录。静态验收
+必须直接检查归档条目的 mode，而不是只检查解包后 staging 目录。
 
 当前 `3.13.15-maafw5.12.3` 归档的 owner/group 已是 `0`，大部分 mode 被归一为目录 `0777`、文件 `0666`；两个 `bin/python3` 也不是可执行位，下游直接执行前必须先 `chmod`。此外，不同生成阶段的 mtime 不一致，且未固定 gzip 元数据。因此它不能被描述为 byte-for-byte reproducible。上述固定元数据流程是后续版本的规范；它不会逐字节复现当前资产。
 
-## 11. 获取 Actions 构建产物
-
-### 11.1 网页触发
-
-触发仓库主线上的 workflow 需要 GitHub 写权限；没有写权限时，先在自己
-的 fork 中运行同一 workflow。
-
-1. 打开仓库的 **Actions** 页面。
-2. 在左侧选择 **Build agent core**。
-3. 点击 **Run workflow**。
-4. 分支选择要构建的分支，通常是 `main`。
-5. 填写两个输入：
-
-   | 输入 | 值 |
-   |---|---|
-   | `python-version` | 稳定版 CPython `3.x.y`，例如 `3.13.15` |
-   | `maafw-version` | MaaFramework 版本，例如 `5.12.3` 或 `5.13.0-beta.1`；后者会规范化为 `5.13.0b1` |
-
-6. 点击 **Run workflow**，进入新 run 页面等待完成。
-
-workflow 的 concurrency 配置会串行调度构建，且不会取消已开始的 run。
-
-### 11.2 GitHub CLI 触发
-
-工作流文件是 `.github/workflows/release.yml`。以下命令默认在仓库检出目录
-执行；不在检出目录时，给每条命令追加 `--repo <owner>/<repository>`：
-
-```bash
-gh workflow run release.yml \
-  --ref main \
-  -f python-version=3.13.15 \
-  -f maafw-version=5.13.0-beta.1
-```
-
-查询最新 run：
-
-```bash
-gh run list --workflow release.yml --limit 5
-```
-
-跟踪指定 run：
-
-```bash
-gh run watch <run-id>
-```
-
-### 11.3 下载和校验
-
-run 成功后，在其页面下方的 **Artifacts** 区域下载
-`agent-core-<python>-maafw<maafw>`。也可以用 GitHub CLI 下载：
-
-```bash
-gh run download <run-id> \
-  --name agent-core-3.13.15-maafw5.13.0b1 \
-  --dir agent-core-artifact
-```
-
-浏览器下载的 artifact 是外层 ZIP，先解开后确认包含两个 `.tar.gz`、
-`SHA256SUMS`、`build-metadata.json` 和 `build-report.md`。`gh run download`
-会直接解出这些文件。然后在 artifact 目录执行：
-
-```bash
-shasum -a 256 --check SHA256SUMS
-```
-
-校验通过后：
-
-1. 准备匹配版本的 MaaFramework 原生库，完成第 9 节真机验收。
-2. 用下游打包脚本走一次完整消费，确认 manifest、site-packages 叠加安装都可用。
-
-该工作流不会创建 tag 或 GitHub Release。`build-report.md` 不应声称包含
-MaaFramework 原生库。artifact 默认保留 30 天；需要长期保存时必须在过期前
-下载并归档。若宿主所需的 MaaFramework Android 包有独立发布地址，应在构建
-报告中记录对应版本的下载链接。
-
-## 12. 下游兼容规则
+## 3. 下游兼容规则
 
 下游消费这个内核时应遵守：
 
-1. 解包后使用 `<abi>/bundle` 作为 agent runtime 根目录。当前 `3.13.15-maafw5.12.3` 资产的 launcher 没有可执行位，启动前必须显式调整；后续按本文生成的包必须在归档内直接带 `0755`。
+1. 解包后使用 `<abi>/bundle` 作为 agent runtime 根目录，并在启动前执行
+   `chmod 0755 <abi>/bundle/bin/python3`。当前 `3.13.15-maafw5.12.3` 资产必须
+   依赖这一步；新构建产物的 tar 条目本身必须已经是 `0755`，这里的 `chmod`
+   只是下游消费时的防御性归一。
 2. 额外依赖安装到 `bundle/site-packages`，不要另建 Python 环境。
 3. 从 `agent-core.json` 读取 Python 版本、ABI、`pyAbiTag`、`wheelApis`、`wheelAbi` 和 `provides`。
 4. 生成 pip platform 时按顺序展开 `wheelApis`，格式为 `android_<api>_<wheelAbi>`。
-5. 用 PEP 503 规则规范化依赖名。命中 `provides` 且项目约束与提供版本兼容时不要重复安装；版本不兼容时必须报出显式冲突，不能把不兼容 pin 静默当作已满足。
+5. 用 PEP 503 规则规范化依赖名，比较依赖名时先把名称转为小写，再把连续的 `-`、`_`、`.` 合并成一个 `-`，然后用结果匹配 `provides`；例如 `NumPy` 按 `numpy` 匹配，`scikit_learn` 和 `scikit-learn` 是同一个依赖名。命中 `provides` 且项目约束与提供版本兼容时不要重复安装；版本不兼容时必须报出显式冲突，不能把不兼容 pin 静默当作已满足。
 6. `maaagentbinary` 是桌面端可执行包，Android 上应依赖宿主 `nativeLibraryDir` 或等价路径，不安装该包。
-7. MaaFramework 原生库由宿主提供，版本必须与 manifest 的 `maafw` 匹配。
+7. MaaFramework 原生库由宿主提供，必须来自官方 MaaFramework GitHub 仓库的
+   Releases，版本必须与 manifest 的 `maafw` 匹配。
 8. 更新任何二进制输入都必须生成新的 Actions artifact，不能复用或覆盖旧产物。
-
-## 13. 当前限制与待固化事项
-
-当前限制：
-
-- CI 只执行静态验收和 Actions artifact 上传，不包含 Android 真机冒烟；对外使用必须保留人工门槛。
-- 仓库没有离线完整输入锁定文件；CPython Android 依赖仍由官方脚本按源码内版本下载。
-- 当前包的二进制元数据显示 launcher 与 `libpython3.13.so` 来自不同 NDK 版本，精确构建来源不可追溯。
-- 当前包的 numpy/StrEnum `RECORD` 是裁剪前的旧清单，包含不存在的 `__pycache__`、tests、f2py 和 entry-point 路径；例如 arm64 包中 numpy 有 951 个悬空行、StrEnum 有 4 个悬空行。它不能作为包元数据完整性验收基线，下个构建必须重新生成。
-- 当前包的两个 launcher 归档 mode 都是 `0666`，不是可执行文件。下游必须先调整权限；后续包按第 10 节归一为 `0755`。
-- 当前归档元数据不完全确定，不能宣称 byte-for-byte 可复现。
-- 包内没有 MaaFramework 原生库，真机测试必须准备宿主侧 native 库。
-- Android CPython 运行时未包含 `_multiprocessing`；需要该 API 的下游项目必须自行提供兼容 shim 或避免跨进程语义。
-
-后续固化建议：
-
-1. 为两个 ABI 增加可复用的真机或模拟器冒烟矩阵，并把结果记录到构建元数据。
-2. 增加离线输入锁存和校验，避免构建过程依赖外部下载地址的可用性。
-3. 保留上一版到下一版的二进制对比报告，区分运行时变更与 site-packages 变更。
-4. 固化 GitHub Actions runner 与 Android SDK/NDK 的可追溯环境信息。

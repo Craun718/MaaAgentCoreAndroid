@@ -26,6 +26,7 @@ NUMPY_VERSION = "2.3.2"
 STRENUM_VERSION = "0.4.15"
 WHEEL_APIS = (24, 21, 16)
 CHAQUOPY_INDEX = "https://chaquo.com/pypi-upstream/"
+ANDROID_NDK_VERSION = "28.2.13676358"
 EXCLUDED_STDLIB_DIRECTORIES = {
     "ensurepip",
     "idlelib",
@@ -272,7 +273,45 @@ def build_cpython(source_root: Path, cross_build: Path) -> None:
                 cross_build,
             ],
             cwd=android_dir,
+    )
+
+
+def pin_android_ndk(source_root: Path) -> None:
+    """Align CPython's Android toolchain with MaaFwApp's AGP default."""
+    env_script = source_root / "Android" / "android-env.sh"
+    pattern = re.compile(r"(?m)^ndk_version=.+$")
+    replacement = f"ndk_version={ANDROID_NDK_VERSION}"
+    content = env_script.read_text(encoding="utf-8")
+    updated, count = pattern.subn(replacement, content, count=1)
+    if count != 1:
+        raise BuildError(
+            f"Expected one ndk_version assignment in {env_script}, found {count}"
         )
+    if updated != content:
+        env_script.write_text(updated, encoding="utf-8")
+
+
+def validate_android_ndk() -> None:
+    source_properties = (
+        Path(os.environ["ANDROID_HOME"])
+        / "ndk"
+        / ANDROID_NDK_VERSION
+        / "source.properties"
+    )
+    if not source_properties.is_file():
+        raise BuildError(
+            f"Android NDK {ANDROID_NDK_VERSION} was not installed by the build"
+        )
+    for line in source_properties.read_text(encoding="utf-8").splitlines():
+        key, separator, value = line.partition("=")
+        if separator and key.strip() == "Pkg.Revision":
+            if value.strip() != ANDROID_NDK_VERSION:
+                raise BuildError(
+                    f"Expected Android NDK {ANDROID_NDK_VERSION}, found "
+                    f"{value.strip()}"
+                )
+            return
+    raise BuildError(f"No Pkg.Revision found in {source_properties}")
 
 
 def copy_runtime(source: Path, destination: Path, major: int, minor: int) -> None:
@@ -847,8 +886,10 @@ def main() -> None:
     print(f"Python source SHA-256: {sha256(python_archive)}")
     print(f"maafw wheel SHA-256: {sha256(maafw_wheel)}")
     shutil.unpack_archive(python_archive, work)
+    pin_android_ndk(source_root)
 
     build_cpython(source_root, cross_build)
+    validate_android_ndk()
 
     archives: list[Path] = []
     for abi, abi_info in ABIS.items():
@@ -913,6 +954,7 @@ def main() -> None:
         "maafwPrerelease": is_prerelease(maafw_version),
         "numpyVersion": NUMPY_VERSION,
         "strenumVersion": STRENUM_VERSION,
+        "androidNdkVersion": ANDROID_NDK_VERSION,
         "runtimeWheelSha256": runtime_wheel_hashes,
         "pythonSourceSha256": sha256(python_archive),
         "maafwWheelSha256": sha256(maafw_wheel),
@@ -932,6 +974,7 @@ def main() -> None:
         f"- MaaFramework Python binding: `{maafw_version}`",
         f"- numpy: `{NUMPY_VERSION}`",
         f"- StrEnum: `{STRENUM_VERSION}`",
+        f"- Android NDK: `{ANDROID_NDK_VERSION}`",
         "- Android ABIs: `arm64-v8a`, `x86_64`",
         "",
         (
