@@ -10,7 +10,6 @@ import gzip
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
 import shlex
 import shutil
@@ -20,13 +19,29 @@ import sys
 import tarfile
 import tempfile
 import zipfile
-
+from pathlib import Path
+from typing import TypedDict
 
 NUMPY_VERSION = "2.3.2"
 STRENUM_VERSION = "0.4.15"
 WHEEL_APIS = (24, 21, 16)
 CHAQUOPY_INDEX = "https://chaquo.com/pypi-upstream/"
-ABIS = {
+EXCLUDED_STDLIB_DIRECTORIES = {
+    "ensurepip",
+    "idlelib",
+    "pydoc_data",
+    "tkinter",
+    "turtledemo",
+}
+
+
+class AbiInfo(TypedDict):
+    host: str
+    wheel_abi: str
+    elf_machine: int
+
+
+ABIS: dict[str, AbiInfo] = {
     "arm64-v8a": {
         "host": "aarch64-linux-android",
         "wheel_abi": "arm64_v8a",
@@ -57,7 +72,9 @@ def normalize_python_version(raw: str) -> tuple[str, int, int, int]:
     value = raw.strip()
     match = re.fullmatch(r"(3)\.(\d+)\.(\d+)", value)
     if not match:
-        raise BuildError("Python version must be a stable 3.x.y release such as 3.13.15")
+        raise BuildError(
+            "Python version must be a stable 3.x.y release such as 3.13.15"
+        )
     major, minor, patch = map(int, match.groups())
     if (major, minor) < (3, 13):
         raise BuildError("CPython Android official build support starts at 3.13")
@@ -151,7 +168,9 @@ def download_maafw_wheel(version: str, destination: Path) -> Path:
         if path.name.lower().startswith(f"maafw-{version}-")
     ]
     if len(matches) != 1:
-        raise BuildError(f"Expected exactly one maafw wheel for {version}, found {matches}")
+        raise BuildError(
+            f"Expected exactly one maafw wheel for {version}, found {matches}"
+        )
     return matches[0]
 
 
@@ -159,7 +178,7 @@ def download_runtime_wheels(
     destination: Path,
     python_version: str,
     py_abi: str,
-) -> None:
+) -> dict[str, str]:
     base_command = [
         sys.executable,
         "-m",
@@ -179,7 +198,7 @@ def download_runtime_wheels(
         CHAQUOPY_INDEX,
     ]
     run(base_command + [f"StrEnum=={STRENUM_VERSION}"])
-    wheel_hashes = {}
+    wheel_hashes: dict[str, str] = {}
     for abi_info in ABIS.values():
         run(
             base_command
@@ -273,7 +292,7 @@ def copy_runtime(source: Path, destination: Path, major: int, minor: int) -> Non
         target = destination / item.name
         if item.is_symlink() or item.is_file():
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(item, target, follow_symlinks=False)
+            shutil.copy2(item, target, follow_symlinks=True)
         elif item.is_dir():
             shutil.copytree(
                 item,
@@ -288,12 +307,18 @@ def copy_runtime(source: Path, destination: Path, major: int, minor: int) -> Non
 def normalize_stdlib(prefix: Path, major: int, minor: int) -> None:
     stdlib = prefix / "lib" / f"python{major}.{minor}"
     archive = prefix / "lib" / f"python{major}{minor}.zip"
-    for tests_name in ("test", "tests"):
-        tests = stdlib / tests_name
-        if tests.is_dir():
-            shutil.rmtree(tests)
-        elif tests.exists() or tests.is_symlink():
-            raise BuildError(f"Unsupported standard library test input: {tests}")
+    for child in stdlib.iterdir():
+        exclude = (
+            child.name in EXCLUDED_STDLIB_DIRECTORIES
+            or child.name in {"test", "tests"}
+            or child.name.startswith(f"config-{major}.{minor}-")
+        )
+        if not exclude:
+            continue
+        if child.is_dir() and not child.is_symlink():
+            shutil.rmtree(child)
+        elif child.exists() or child.is_symlink():
+            raise BuildError(f"Unsupported standard library exclusion input: {child}")
     source_paths: list[Path] = []
     for path in sorted(stdlib.rglob("*.py")):
         relative = path.relative_to(stdlib)
@@ -327,6 +352,23 @@ def normalize_stdlib(prefix: Path, major: int, minor: int) -> None:
         path.unlink()
 
 
+def strip_runtime(source_root: Path, prefix: Path, host: str) -> None:
+    libraries = sorted(
+        path
+        for path in (prefix / "lib").rglob("*.so*")
+        if path.is_file() and not path.is_symlink()
+    )
+    if not libraries:
+        raise BuildError(f"No runtime libraries found to strip under {prefix / 'lib'}")
+    shell_script = f"""set -eu
+HOST={shlex.quote(host)}
+PREFIX={shlex.quote(str(prefix))}
+. {shlex.quote(str(source_root / "Android" / "android-env.sh"))}
+exec "$STRIP" --strip-unneeded {" ".join(shlex.quote(str(path)) for path in libraries)}
+"""
+    run(["bash", "-c", shell_script], cwd=source_root)
+
+
 def compile_launcher(
     source_root: Path,
     launcher_source: Path,
@@ -340,11 +382,11 @@ def compile_launcher(
     shell_script = f"""set -eu
 HOST={shlex.quote(host)}
 PREFIX={shlex.quote(str(prefix))}
-. {shlex.quote(str(source_root / 'Android' / 'android-env.sh'))}
+. {shlex.quote(str(source_root / "Android" / "android-env.sh"))}
 exec "$CC" $CFLAGS -std=c17 -O2 -fPIE -pie \
-  -I{shlex.quote(str(prefix / 'include'))} \
+  -I{shlex.quote(str(prefix / "include" / f"python{major}.{minor}"))} \
   {shlex.quote(str(launcher_source))} \
-  -L{shlex.quote(str(prefix / 'lib'))} \
+  -L{shlex.quote(str(prefix / "lib"))} \
   -lpython{major}.{minor} -ldl $LDFLAGS \
   -o {shlex.quote(str(output))}
 """
@@ -445,9 +487,7 @@ def regenerate_records(site_packages: Path) -> None:
                 if path == record:
                     continue
                 digest = hashlib.sha256(path.read_bytes()).digest()
-                encoded = (
-                    base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
-                )
+                encoded = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
                 new_rows.append(
                     (
                         path.relative_to(site_packages).as_posix(),
@@ -481,9 +521,13 @@ def extract_and_patch_maafw(wheel: Path, destination: Path) -> None:
     library = destination / "library.py"
     text = library.read_text(encoding="utf-8")
     needle = "        platform_type = platform.system().lower()\n"
-    patch = '        if platform_type == "android":\n            platform_type = LINUX\n'
+    patch = (
+        '        if platform_type == "android":\n            platform_type = LINUX\n'
+    )
     if text.count(needle) != 1:
-        raise BuildError("maa/library.py platform selection changed; update the Android patch")
+        raise BuildError(
+            "maa/library.py platform selection changed; update the Android patch"
+        )
     with library.open("w", encoding="utf-8", newline="\n") as handle:
         handle.write(text.replace(needle, needle + patch))
 
@@ -561,15 +605,18 @@ def validate_bundle(
     for key, value in expected_manifest_values.items():
         if manifest.get(key) != value:
             raise BuildError(
-                f"Manifest mismatch for {abi}.{key}: "
-                f"{manifest.get(key)!r} != {value!r}"
+                f"Manifest mismatch for {abi}.{key}: {manifest.get(key)!r} != {value!r}"
             )
     if manifest["provides"].get("maafw") != maafw_version:
         raise BuildError(f"Manifest maafw mismatch for {abi}")
 
     launcher = bundle / "bin" / "python3"
     elf_type, machine, interpreters = elf_info(launcher)
-    if elf_type != 3 or machine != abi_info["elf_machine"] or interpreters != ["/system/bin/linker64"]:
+    if (
+        elf_type != 3
+        or machine != abi_info["elf_machine"]
+        or interpreters != ["/system/bin/linker64"]
+    ):
         raise BuildError(
             f"Invalid launcher ELF for {abi}: type={elf_type}, "
             f"machine={machine}, interp={interpreters}"
@@ -603,7 +650,9 @@ def validate_bundle(
         if native.is_file() and not native.is_symlink() and ".so" in native.name:
             _, machine, _ = elf_info(native)
             if machine != abi_info["elf_machine"]:
-                raise BuildError(f"Wrong site-packages ELF machine in {native}: {machine}")
+                raise BuildError(
+                    f"Wrong site-packages ELF machine in {native}: {machine}"
+                )
     if any(path.is_dir() for path in bundle.rglob("__pycache__")):
         raise BuildError(f"Found __pycache__ in {abi}")
     if any(path.is_file() for path in bundle.rglob("*.pyc")):
@@ -644,9 +693,7 @@ def validate_records(site_packages: Path) -> None:
             if not path.is_file():
                 raise BuildError(f"RECORD references missing file: {path}")
             digest = hashlib.sha256(path.read_bytes()).digest()
-            expected = (
-                base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
-            )
+            expected = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
             if encoded != expected or size_text != str(path.stat().st_size):
                 raise BuildError(f"RECORD hash or size mismatch: {path}")
         has_license = any(
@@ -662,9 +709,7 @@ def normalize_modes(stage_root: Path) -> None:
         if path.is_symlink():
             # Tar metadata is normalized explicitly for symlink entries.
             continue
-        elif path.is_dir():
-            path.chmod(0o755)
-        elif (
+        if path.is_dir() or (
             path.is_file()
             and path.name == "python3"
             and path.parent.parent.name == "bundle"
@@ -704,9 +749,11 @@ def write_archive(
                 info.uname = ""
                 info.gname = ""
                 info.mtime = 0
-                if info.isdir() or info.issym():
-                    info.mode = 0o755
-                elif info.isfile() and info.name.endswith("/bundle/bin/python3"):
+                if (
+                    info.isdir()
+                    or info.issym()
+                    or (info.isfile() and info.name.endswith("/bundle/bin/python3"))
+                ):
                     info.mode = 0o755
                 elif info.isfile():
                     info.mode = 0o644
@@ -718,15 +765,18 @@ def write_archive(
                 else:
                     archive.addfile(info)
 
-        with output.open("wb") as compressed_handle, raw_path.open("rb") as raw_handle:
-            with gzip.GzipFile(
+        with (
+            output.open("wb") as compressed_handle,
+            raw_path.open("rb") as raw_handle,
+            gzip.GzipFile(
                 filename="",
                 mode="wb",
                 compresslevel=9,
                 fileobj=compressed_handle,
                 mtime=0,
-            ) as gzip_handle:
-                shutil.copyfileobj(raw_handle, gzip_handle, length=1024 * 1024)
+            ) as gzip_handle,
+        ):
+            shutil.copyfileobj(raw_handle, gzip_handle, length=1024 * 1024)
 
 
 def validate_archive(path: Path, abi: str) -> None:
@@ -741,8 +791,14 @@ def validate_archive(path: Path, abi: str) -> None:
                 member.name != bundle_root
                 and not member.name.startswith(expected_prefix)
             ) or member.name.startswith("/"):
-                raise BuildError(f"Unexpected archive path {member.name} in {path.name}")
-            if member.name.endswith("/bundle/bin/python3") or member.isdir() or member.issym():
+                raise BuildError(
+                    f"Unexpected archive path {member.name} in {path.name}"
+                )
+            if (
+                member.name.endswith("/bundle/bin/python3")
+                or member.isdir()
+                or member.issym()
+            ):
                 expected_mode = 0o755
             else:
                 expected_mode = 0o644
@@ -800,8 +856,9 @@ def main() -> None:
         bundle = stage / abi / "bundle"
         prefix = bundle / "prefix"
         site_packages = bundle / "site-packages"
-        copy_runtime(prefix_source, prefix, major, minor)
+        copy_runtime(prefix_source, prefix / "lib", major, minor)
         normalize_stdlib(prefix, major, minor)
+        strip_runtime(source_root, prefix, abi_info["host"])
         compile_launcher(
             source_root,
             script_root / "scripts" / "launcher.c",
@@ -878,8 +935,10 @@ def main() -> None:
         f"- StrEnum: `{STRENUM_VERSION}`",
         "- Android ABIs: `arm64-v8a`, `x86_64`",
         "",
-        "The archives do **not** contain MaaFramework native libraries. "
-        "The Android host must provide native libraries matching the manifest version.",
+        (
+            "The archives do **not** contain MaaFramework native libraries. "
+            "The Android host must provide native libraries matching the manifest version."
+        ),
         "Static validation passed in CI. Android on-device smoke testing has not been run by this workflow.",
         "",
         "## SHA-256",
