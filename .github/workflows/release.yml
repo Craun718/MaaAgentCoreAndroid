@@ -26,8 +26,6 @@ jobs:
     env:
       PYTHON_VERSION_INPUT: ${{ inputs['python-version'] }}
       MAAFW_VERSION_INPUT: ${{ inputs['maafw-version'] }}
-      ANDROID_HOME: ${{ runner.temp }}/android-sdk
-      BUILD_WORK_DIR: ${{ runner.temp }}/agent-core-build
     steps:
       - uses: actions/checkout@v4
 
@@ -49,10 +47,14 @@ jobs:
             libsqlite3-dev libffi-dev liblzma-dev
 
       - name: Set up Android SDK
+        env:
+          ANDROID_HOME: ${{ runner.temp }}/android-sdk
         run: bash scripts/setup-android-sdk.sh
 
       - name: Build and validate archives
         id: build
+        env:
+          BUILD_WORK_DIR: ${{ runner.temp }}/agent-core-build
         run: |
           python scripts/build_agent_core.py \
             --python-version "$PYTHON_VERSION_INPUT" \
@@ -79,7 +81,7 @@ jobs:
           RELEASE_TAG: ${{ steps.build.outputs.release_tag }}
           RELEASE_TITLE: ${{ steps.build.outputs.python_version }} / MaaFramework ${{ steps.build.outputs.maafw_version }}
           MAAFW_PRERELEASE: ${{ steps.build.outputs.maafw_prerelease }}
-          DIST_DIR: ${{ env.BUILD_WORK_DIR }}/dist
+          DIST_DIR: ${{ runner.temp }}/agent-core-build/dist
         run: |
           if git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG" >/dev/null 2>&1; then
             echo "Tag $RELEASE_TAG already exists; refusing to overwrite it." >&2
