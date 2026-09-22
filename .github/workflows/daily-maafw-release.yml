@@ -49,15 +49,46 @@ jobs:
           )"
           release_tag="agent-core-${PYTHON_VERSION}-maafw${maafw_version}"
           should_build=true
+          pypi_ready=not-checked
 
           if gh release view "$release_tag" --json tagName > /dev/null 2>&1; then
             should_build=false
+          else
+            pypi_ready="$(MAAFW_VERSION="$maafw_version" python - <<'PY'
+          import json
+          import os
+          from urllib.error import HTTPError
+          from urllib.request import urlopen
+
+          version = os.environ["MAAFW_VERSION"]
+          url = f"https://pypi.org/pypi/maafw/{version}/json"
+          try:
+              with urlopen(url, timeout=30) as response:
+                  files = json.load(response)["urls"]
+          except HTTPError as exc:
+              if exc.code == 404:
+                  print("false")
+                  raise SystemExit
+              raise
+
+          available = any(
+              entry["filename"].endswith("manylinux2014_aarch64.whl")
+              for entry in files
+          )
+          print("true" if available else "false")
+          PY
+            )"
+            if [[ "$pypi_ready" != "true" ]]; then
+              echo "::notice::MaaFramework $maafw_version is not yet available as a PyPI aarch64 wheel; skipping build."
+              should_build=false
+            fi
           fi
 
           {
             printf 'maafw_version=%s\n' "$maafw_version"
             printf 'release_tag=%s\n' "$release_tag"
             printf 'should_build=%s\n' "$should_build"
+            printf 'pypi_ready=%s\n' "$pypi_ready"
           } >> "$GITHUB_OUTPUT"
 
       - name: Summarize release check
@@ -66,6 +97,7 @@ jobs:
           - Latest stable MaaFramework: \`${{ steps.check.outputs.maafw_version }}\`
           - Expected release tag: \`${{ steps.check.outputs.release_tag }}\`
           - Build needed: \`${{ steps.check.outputs.should_build }}\`
+          - PyPI aarch64 wheel available: \`${{ steps.check.outputs.pypi_ready }}\`
           EOF
 
   build-and-upload:
@@ -164,8 +196,9 @@ jobs:
 
       - name: Prepare release notes
         run: |
-          cat release/build-report.md release-notes.md
-          cat >> release-notes.md <<'EOF'
+          {
+            cat release/build-report.md
+            cat <<'EOF'
 
           ## Installation
 
@@ -174,6 +207,8 @@ jobs:
           [MaaFramework release](https://github.com/MaaXYZ/MaaFramework/releases)
           in the Android host application.
           EOF
+          } > release-notes.md
+          cat release-notes.md
 
       - name: Create GitHub release
         run: |
