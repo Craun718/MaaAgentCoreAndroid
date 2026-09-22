@@ -1,6 +1,9 @@
 name: Daily MaaFramework prerelease
 
 on:
+  push:
+    paths:
+      - .github/workflows/daily-maafw-prerelease.yml
   schedule:
     # Daily at 08:45 Asia/Shanghai. GitHub Actions schedules use UTC.
     - cron: "45 0 * * *"
