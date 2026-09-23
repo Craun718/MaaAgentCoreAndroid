@@ -39,12 +39,7 @@ jobs:
           java-version: "17"
 
       - name: Install host build tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential pkg-config curl unzip \
-            libssl-dev zlib1g-dev libbz2-dev libreadline-dev \
-            libsqlite3-dev libffi-dev liblzma-dev
+        run: python scripts/build_agent_core_release.py install-dependencies
 
       - name: Set up Android SDK
         env:
@@ -55,27 +50,12 @@ jobs:
         id: build
         env:
           BUILD_WORK_DIR: ${{ runner.temp }}/agent-core-build
+          GH_TOKEN: ${{ github.token }}
         run: |
-          python scripts/build_agent_core.py \
+          python scripts/build_agent_core_release.py \
             --python-version "$PYTHON_VERSION_INPUT" \
             --maafw-version "$MAAFW_VERSION_INPUT" \
             --work-dir "$BUILD_WORK_DIR"
-          python - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          metadata = json.loads(
-              (Path(os.environ["BUILD_WORK_DIR"]) / "dist" / "build-metadata.json").read_text()
-          )
-          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as handle:
-              handle.write(f"python_version={metadata['pythonVersion']}\n")
-              handle.write(f"maafw_version={metadata['maafwVersion']}\n")
-              handle.write(
-                  f"artifact_name=agent-core-{metadata['pythonVersion']}"
-                  f"-maafw{metadata['maafwVersion']}\n"
-              )
-          PY
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v7

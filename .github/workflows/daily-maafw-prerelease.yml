@@ -21,11 +21,10 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       maafw-version: ${{ steps.check.outputs.maafw_version }}
+      maafw-published-at: ${{ steps.check.outputs.maafw_published_at }}
       release-tag: ${{ steps.check.outputs.release_tag }}
       should-build: ${{ steps.check.outputs.should_build }}
     env:
-      PYTHON_VERSION: "3.13.15"
-      UPSTREAM_REPOSITORY: MaaXYZ/MaaFramework
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
@@ -33,83 +32,7 @@ jobs:
 
       - name: Check latest MaaFramework prerelease
         id: check
-        run: |
-          upstream_tag="$(gh api --paginate \
-            "repos/$UPSTREAM_REPOSITORY/releases?per_page=100" \
-            --jq 'first(.[] | select(.draft == false and .prerelease == true) | .tag_name)' |
-            head -n 1
-          )"
-          if [[ -z "$upstream_tag" || "$upstream_tag" == "null" ]]; then
-            echo "No upstream prerelease release was found"
-            exit 1
-          fi
-          upstream_tag="${upstream_tag#v}"
-
-          maafw_version="$(MAAFW_INPUT="$upstream_tag" python - <<'PY'
-          import os
-          import sys
-
-          sys.path.insert(0, "scripts")
-          from build_agent_core import is_prerelease, normalize_maafw_version
-
-          version = normalize_maafw_version(os.environ["MAAFW_INPUT"])
-          if not is_prerelease(version):
-              raise SystemExit("The selected upstream release is not a prerelease")
-          print(version)
-          PY
-          )"
-          release_tag="agent-core-${PYTHON_VERSION}-maafw${maafw_version}"
-          should_build=true
-          pypi_ready=not-checked
-
-          if gh release view "$release_tag" --json tagName > /dev/null 2>&1; then
-            should_build=false
-          else
-            pypi_ready="$(MAAFW_VERSION="$maafw_version" python - <<'PY'
-          import json
-          import os
-          from urllib.error import HTTPError
-          from urllib.request import urlopen
-
-          version = os.environ["MAAFW_VERSION"]
-          url = f"https://pypi.org/pypi/maafw/{version}/json"
-          try:
-              with urlopen(url, timeout=30) as response:
-                  files = json.load(response)["urls"]
-          except HTTPError as exc:
-              if exc.code == 404:
-                  print("false")
-                  raise SystemExit
-              raise
-
-          available = any(
-              entry["filename"].endswith("manylinux2014_aarch64.whl")
-              for entry in files
-          )
-          print("true" if available else "false")
-          PY
-            )"
-            if [[ "$pypi_ready" != "true" ]]; then
-              echo "::notice::MaaFramework $maafw_version is not yet available as a PyPI aarch64 wheel; skipping build."
-              should_build=false
-            fi
-          fi
-
-          {
-            printf 'maafw_version=%s\n' "$maafw_version"
-            printf 'release_tag=%s\n' "$release_tag"
-            printf 'should_build=%s\n' "$should_build"
-            printf 'pypi_ready=%s\n' "$pypi_ready"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Summarize release check
-        run: |
-          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
-          - Latest MaaFramework prerelease: \`${{ steps.check.outputs.maafw_version }}\`
-          - Expected release tag: \`${{ steps.check.outputs.release_tag }}\`
-          - Build needed: \`${{ steps.check.outputs.should_build }}\`
-          - PyPI aarch64 wheel available: \`${{ steps.check.outputs.pypi_ready }}\`
-          EOF
+        run: python scripts/maafw_release.py check --kind prerelease --python-version 3.13.15
 
   build-and-upload:
     needs: check-latest-prerelease
@@ -121,6 +44,7 @@ jobs:
     env:
       PYTHON_VERSION_INPUT: "3.13.15"
       MAAFW_VERSION_INPUT: ${{ needs.check-latest-prerelease.outputs.maafw-version }}
+      MAAFW_PUBLISHED_AT: ${{ needs.check-latest-prerelease.outputs.maafw-published-at }}
     steps:
       - uses: actions/checkout@v7
 
@@ -134,12 +58,7 @@ jobs:
           java-version: "17"
 
       - name: Install host build tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential pkg-config curl unzip \
-            libssl-dev zlib1g-dev libbz2-dev libreadline-dev \
-            libsqlite3-dev libffi-dev liblzma-dev
+        run: python scripts/build_agent_core_release.py install-dependencies
 
       - name: Set up Android SDK
         env:
@@ -151,22 +70,11 @@ jobs:
         env:
           BUILD_WORK_DIR: ${{ runner.temp }}/agent-core-build
         run: |
-          python scripts/build_agent_core.py \
+          python scripts/build_agent_core_release.py \
             --python-version "$PYTHON_VERSION_INPUT" \
             --maafw-version "$MAAFW_VERSION_INPUT" \
+            --maafw-published-at "$MAAFW_PUBLISHED_AT" \
             --work-dir "$BUILD_WORK_DIR"
-          python - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          metadata = json.loads(
-              (Path(os.environ["BUILD_WORK_DIR"]) / "dist" / "build-metadata.json").read_text()
-          )
-          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as handle:
-              handle.write(f"artifact_name=agent-core-{metadata['pythonVersion']}"
-                           f"-maafw{metadata['maafwVersion']}\n")
-          PY
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v7
@@ -201,42 +109,5 @@ jobs:
           name: ${{ needs.build-and-upload.outputs.artifact_name }}
           path: release
 
-      - name: Verify archives
-        working-directory: release
-        run: sha256sum --check SHA256SUMS
-
-      - name: Prepare release notes
-        run: |
-          {
-            cat release/build-report.md
-            cat <<'EOF'
-
-          This is a prerelease build and has not been validated on Android devices.
-
-          ## Installation
-
-          The archives contain the Python agent core only. Install the matching
-          MaaFramework Android native libraries from the official
-          [MaaFramework release](https://github.com/MaaXYZ/MaaFramework/releases)
-          in the Android host application.
-          EOF
-          } > release-notes.md
-          cat release-notes.md
-
       - name: Create GitHub release
-        run: |
-          files=(
-            release/agent-core-*.tar.gz
-            release/SHA256SUMS
-            release/build-metadata.json
-            release/build-report.md
-          )
-          if gh release view "$RELEASE_TAG" --json tagName > /dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" "${files[@]}" --clobber
-          else
-            gh release create "$RELEASE_TAG" "${files[@]}" \
-              --target "$GITHUB_SHA" \
-              --title "$RELEASE_TAG" \
-              --notes-file release-notes.md \
-              --prerelease
-          fi
+        run: python scripts/publish_agent_core_release.py --release-tag "$RELEASE_TAG" --release-dir release --prerelease
