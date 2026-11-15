@@ -39,16 +39,18 @@ class UpstreamRelease:
 
 
 def normalize_version(raw: str) -> str:
-    value = raw.strip().lower()
+    value = raw.strip().lower().removeprefix("v")
+    stages = {"alpha": "a", "beta": "b"}
     value = re.sub(
-        r"-(?:beta|b)\.(\d+)",
-        lambda match: f"b{int(match.group(1))}",
+        r"-(alpha|beta|rc|a|b)\.?(\d+)$",
+        lambda match: f"{stages.get(match.group(1), match.group(1))}"
+        f"{int(match.group(2))}",
         value,
     )
     if not re.fullmatch(r"\d+(?:\.\d+)*(?:(?:a|b|rc)\d+)?", value):
         raise MaafwVersionError(
             "MaaFramework version must be a release such as 5.12.3, "
-            "or a beta such as 5.13.0b1 / 5.13.0-beta.1"
+            "or a prerelease such as 6.0.0a1 / 6.0.0-alpha.1"
         )
     return value
 
@@ -92,7 +94,7 @@ def latest_stable(repository: str = UPSTREAM_REPOSITORY) -> UpstreamRelease:
 
 
 def latest_prerelease(repository: str = UPSTREAM_REPOSITORY) -> UpstreamRelease:
-    tag = gh_text(
+    output = gh_text(
         [
             "api",
             "--paginate",
@@ -101,8 +103,10 @@ def latest_prerelease(repository: str = UPSTREAM_REPOSITORY) -> UpstreamRelease:
             "first(.[] | select(.draft == false and .prerelease == true) | .tag_name)",
         ]
     )
-    if not tag:
+    tags = [line.strip() for line in output.splitlines() if line.strip()]
+    if not tags or tags[0] == "null":
         raise MaafwReleaseError("No upstream prerelease release was found")
+    tag = tags[0]
     return _release(gh_json(f"repos/{repository}/releases/tags/{tag}"))
 
 
