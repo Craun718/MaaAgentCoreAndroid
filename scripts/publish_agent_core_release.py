@@ -148,7 +148,7 @@ def publish(release_tag: str, release_dir: Path, prerelease: bool) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--release-tag", required=True)
-    parser.add_argument("--release-dir", required=True)
+    parser.add_argument("--release-dir", type=Path, required=True)
     parser.add_argument("--prerelease", action="store_true")
     return parser.parse_args()
 
