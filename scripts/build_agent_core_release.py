@@ -9,7 +9,13 @@ import sys
 from pathlib import Path
 
 import maafw_release
-from build_agent_core import BuildError
+from build_agent_core import (
+    BuildError,
+    archive_mtime,
+    format_archive_mtime,
+    normalize_maafw_version,
+    normalize_python_version,
+)
 from github import write_job_output
 
 SCRIPT_ROOT = Path(__file__).resolve().parent
@@ -45,6 +51,9 @@ def build(
     maafw_published_at: str | None,
     repository: str,
 ) -> None:
+    python_version = normalize_python_version(python_version)[0]
+    maafw_version = normalize_maafw_version(maafw_version)
+
     if maafw_published_at is None:
         release = maafw_release.release_for_version(maafw_version, repository)
         published_at = release.published_at
@@ -52,6 +61,9 @@ def build(
         published_at = maafw_published_at
 
     resolved_work_dir = work_dir.resolve()
+    published_at = format_archive_mtime(archive_mtime(published_at))
+    # Build inputs are normalized, and the interpreter/script paths are fixed.
+    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
     subprocess.run(
         [
             sys.executable,
@@ -66,6 +78,7 @@ def build(
             str(resolved_work_dir),
         ],
         check=True,
+        shell=False,
     )
 
     metadata_path = resolved_work_dir / "dist" / "build-metadata.json"

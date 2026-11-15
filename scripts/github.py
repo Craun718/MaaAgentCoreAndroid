@@ -16,7 +16,15 @@ def run_gh(
     arguments: list[str], *, capture: bool = False, check: bool = False
 ) -> subprocess.CompletedProcess[str]:
     command = ["gh", *arguments]
-    result = subprocess.run(command, check=False, capture_output=capture, text=True)
+    # gh is fixed, and caller values remain separate argv entries with shell disabled.
+    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
+    result = subprocess.run(
+        command,
+        check=False,
+        capture_output=capture,
+        text=True,
+        shell=False,
+    )
     if check and result.returncode != 0:
         detail = result.stderr.strip() if capture else ""
         raise GitHubError(f"GitHub CLI request failed ({' '.join(command)}): {detail}")
