@@ -70,7 +70,7 @@ jobs:
         env:
           BUILD_WORK_DIR: ${{ runner.temp }}/agent-core-build
         run: |
-          python scripts/build_agent_core_release.py \
+          python scripts/build_agent_core_release.py build \
             --python-version "$PYTHON_VERSION_INPUT" \
             --maafw-version "$MAAFW_VERSION_INPUT" \
             --maafw-published-at "$MAAFW_PUBLISHED_AT" \

@@ -52,7 +52,7 @@ jobs:
           BUILD_WORK_DIR: ${{ runner.temp }}/agent-core-build
           GH_TOKEN: ${{ github.token }}
         run: |
-          python scripts/build_agent_core_release.py \
+          python scripts/build_agent_core_release.py build \
             --python-version "$PYTHON_VERSION_INPUT" \
             --maafw-version "$MAAFW_VERSION_INPUT" \
             --work-dir "$BUILD_WORK_DIR"
