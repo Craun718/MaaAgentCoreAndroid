@@ -19,8 +19,11 @@ import sys
 import tarfile
 import tempfile
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TypedDict
+
+from maafw_release import MaafwVersionError, is_prerelease, normalize_version
 
 NUMPY_VERSION = "2.3.2"
 STRENUM_VERSION = "0.4.15"
@@ -63,6 +66,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--python-version", required=True)
     parser.add_argument("--maafw-version", required=True)
+    parser.add_argument("--maafw-published-at")
     parser.add_argument("--work-dir", type=Path, default=Path("build/work"))
     parser.add_argument("--print-normalized-versions", action="store_true")
     return parser.parse_args()
@@ -82,22 +86,41 @@ def normalize_python_version(raw: str) -> tuple[str, int, int, int]:
 
 
 def normalize_maafw_version(raw: str) -> str:
-    value = raw.strip().lower()
-    value = re.sub(
-        r"-(?:beta|b)\.(\d+)",
-        lambda match: f"b{int(match.group(1))}",
-        value,
-    )
-    if not re.fullmatch(r"\d+(?:\.\d+)*(?:(?:a|b|rc)\d+)?", value):
+    try:
+        return normalize_version(raw)
+    except MaafwVersionError as error:
+        raise BuildError(str(error)) from error
+
+
+def archive_mtime(value: str) -> int:
+    text = value.strip()
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError as error:
         raise BuildError(
-            "MaaFramework version must be a release such as 5.12.3, "
-            "or a beta such as 5.13.0b1 / 5.13.0-beta.1"
+            "MaaFramework published time must be ISO 8601, such as 2026-09-16T03:09:24Z"
+        ) from error
+    if parsed.tzinfo is None:
+        raise BuildError("MaaFramework published time must include a timezone")
+
+    epoch = int(parsed.astimezone(timezone.utc).timestamp())
+    if epoch < 315532800:
+        raise BuildError(
+            "Archive mtime must be 1980-01-01 or later for ZIP compatibility"
         )
-    return value
+    if epoch > 0xFFFFFFFF:
+        raise BuildError("Archive mtime is outside the gzip timestamp range")
+    return epoch
 
 
-def is_prerelease(version: str) -> bool:
-    return re.search(r"(?:a|b|rc)\d+$", version) is not None
+def format_archive_mtime(epoch: int) -> str:
+    return (
+        datetime.fromtimestamp(epoch, timezone.utc)
+        .isoformat(timespec="seconds")
+        .replace("+00:00", "Z")
+    )
 
 
 def run(
@@ -724,6 +747,7 @@ def write_archive(
     abi: str,
     output: Path,
     python_version: str,
+    archive_mtime_epoch: int,
 ) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     bundle_root = stage_root / abi / "bundle"
@@ -748,7 +772,7 @@ def write_archive(
                 info.gid = 0
                 info.uname = ""
                 info.gname = ""
-                info.mtime = 0
+                info.mtime = archive_mtime_epoch
                 if (
                     info.isdir()
                     or info.issym()
@@ -773,13 +797,13 @@ def write_archive(
                 mode="wb",
                 compresslevel=9,
                 fileobj=compressed_handle,
-                mtime=0,
+                mtime=archive_mtime_epoch,
             ) as gzip_handle,
         ):
             shutil.copyfileobj(raw_handle, gzip_handle, length=1024 * 1024)
 
 
-def validate_archive(path: Path, abi: str) -> None:
+def validate_archive(path: Path, abi: str, archive_mtime_epoch: int) -> None:
     bundle_root = f"{abi}/bundle"
     expected_prefix = f"{abi}/bundle/"
     with tarfile.open(path, "r:gz") as archive:
@@ -806,7 +830,11 @@ def validate_archive(path: Path, abi: str) -> None:
                 raise BuildError(
                     f"Archive mode mismatch for {member.name}: {oct(member.mode)}"
                 )
-            if member.uid != 0 or member.gid != 0 or member.mtime != 0:
+            if (
+                member.uid != 0
+                or member.gid != 0
+                or member.mtime != archive_mtime_epoch
+            ):
                 raise BuildError(f"Archive metadata mismatch for {member.name}")
 
 
@@ -822,6 +850,10 @@ def main() -> None:
             )
         )
         return
+    if not args.maafw_published_at:
+        raise BuildError("--maafw-published-at is required to build archives")
+    archive_mtime_epoch = archive_mtime(args.maafw_published_at)
+    archive_mtime_text = format_archive_mtime(archive_mtime_epoch)
 
     if "ANDROID_HOME" not in os.environ:
         raise BuildError("ANDROID_HOME must be set")
@@ -897,8 +929,8 @@ def main() -> None:
         )
         normalize_modes(stage / abi)
         archive = dist / f"agent-core-{python_version}-{abi}.tar.gz"
-        write_archive(stage, abi, archive, python_version)
-        validate_archive(archive, abi)
+        write_archive(stage, abi, archive, python_version, archive_mtime_epoch)
+        validate_archive(archive, abi, archive_mtime_epoch)
         archives.append(archive)
 
     hashes = {archive.name: sha256(archive) for archive in archives}
@@ -911,6 +943,8 @@ def main() -> None:
         "maafwVersion": maafw_version,
         "maafwInput": args.maafw_version,
         "maafwPrerelease": is_prerelease(maafw_version),
+        "maafwPublishedAt": archive_mtime_text,
+        "archiveMtime": archive_mtime_text,
         "numpyVersion": NUMPY_VERSION,
         "strenumVersion": STRENUM_VERSION,
         "runtimeWheelSha256": runtime_wheel_hashes,
@@ -930,6 +964,7 @@ def main() -> None:
         "",
         f"- CPython: `{python_version}`",
         f"- MaaFramework Python binding: `{maafw_version}`",
+        f"- Archive mtime source: MaaFramework `{archive_mtime_text}`",
         f"- numpy: `{NUMPY_VERSION}`",
         f"- StrEnum: `{STRENUM_VERSION}`",
         "- Android ABIs: `arm64-v8a`, `x86_64`",

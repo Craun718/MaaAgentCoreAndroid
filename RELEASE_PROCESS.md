@@ -203,8 +203,13 @@ work/
 python scripts/build_agent_core.py \
   --python-version 3.13.15 \
   --maafw-version 5.13.0-beta.1 \
+  --maafw-published-at 2026-08-02T16:30:48Z \
   --work-dir "$AGENT_CORE_WORK_DIR"
 ```
+
+`--maafw-published-at` 是该 MaaFramework tag 的 GitHub release
+`published_at`。构建脚本会把它规范化为 UTC，并作为两个 tar 条目和 gzip
+header 的固定 mtime；手动 workflow 会先从 GitHub API 反查该时间。
 
 ## 5. 生成 CPython 运行时
 
@@ -533,7 +538,7 @@ print(platform.machine(), manifest["abi"], np.__version__)
     tar --null --no-recursion --files-from=- \
       --format=gnu \
       --sort=name \
-      --mtime='@0' \
+      --mtime='@315532800' \
       --owner=0 --group=0 --numeric-owner \
       --mode='u+rwX,go+rX,go-w' \
       -cf - |
@@ -542,6 +547,10 @@ print(platform.machine(), manifest["abi"], np.__version__)
 ```
 
 `x86_64` 把命令中的两个 ABI 字符串替换为 `x86_64`。
+
+示例中的 `@315532800` 是 `1980-01-01T00:00:00Z`。生产脚本实际使用对应
+MaaFramework release 的 `published_at`；固定到 1980 年之后是为了让 tar 条目
+可直接进入 Python `zipfile` 打包流程。
 
 生成后执行：
 
